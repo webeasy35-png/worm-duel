@@ -2,30 +2,63 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>ДУЭЛЬ ЧЕРВЯКОВ — 8-bit Artillery</title>
+<title>BULBA BATTLE — 8-bit Artillery</title>
 <style>
   html, body {
     margin: 0;
     height: 100%;
-    background: #0b0b10;
+    background:
+      radial-gradient(ellipse at 50% 30%, #2a241c 0%, #0a0806 75%);
     display: flex;
     align-items: center;
     justify-content: center;
     font-family: monospace;
   }
   .tv-frame {
-    padding: 22px;
-    background: linear-gradient(#3c3c3c, #161616);
-    border-radius: 30px;
-    box-shadow: inset 0 0 14px #000, 0 10px 40px rgba(0,0,0,0.7);
+    position: relative;
+    padding: 34px 40px 54px;
+    background:
+      repeating-linear-gradient(
+        100deg,
+        #7a5230 0px, #7a5230 3px,
+        #6b4626 3px, #6b4626 6px,
+        #74502c 6px, #74502c 9px
+      );
+    border-radius: 46px 46px 30px 30px;
+    box-shadow:
+      inset 0 3px 0 rgba(255,220,170,0.25),
+      inset 0 -6px 14px rgba(0,0,0,0.55),
+      inset 6px 0 12px rgba(0,0,0,0.3),
+      inset -6px 0 12px rgba(0,0,0,0.3),
+      0 22px 50px rgba(0,0,0,0.75);
+  }
+  .tv-brand {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #e8c98a;
+    font-size: 11px;
+    letter-spacing: 4px;
+    opacity: 0.75;
+    text-shadow: 0 1px 0 rgba(0,0,0,0.6);
+  }
+  .screen-bezel {
+    padding: 16px;
+    background: linear-gradient(155deg, #262220, #0c0a09 60%);
+    border-radius: 58px / 42px;
+    box-shadow:
+      inset 0 0 0 2px rgba(255,255,255,0.04),
+      inset 0 10px 22px rgba(0,0,0,0.8);
   }
   .screen-wrap {
     position: relative;
     width: 900px;
     height: 600px;
-    border-radius: 10px;
+    border-radius: 44px / 30px;
     overflow: hidden;
-    box-shadow: inset 0 0 30px rgba(0,0,0,0.9);
+    background: #000;
+    box-shadow: inset 0 0 50px rgba(0,0,0,0.95);
   }
   canvas#game {
     display: block;
@@ -38,28 +71,103 @@
     pointer-events: none;
     background: repeating-linear-gradient(
       to bottom,
-      rgba(0,0,0,0.22) 0px,
-      rgba(0,0,0,0.22) 1px,
+      rgba(0,0,0,0.25) 0px,
+      rgba(0,0,0,0.25) 1px,
       transparent 2px,
       transparent 3px
     );
     mix-blend-mode: multiply;
   }
+  .crt-glass {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(120deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.05) 14%, transparent 30%),
+      radial-gradient(ellipse 70% 55% at 30% 18%, rgba(255,255,255,0.10), transparent 60%);
+    mix-blend-mode: screen;
+  }
   .vignette {
     position: absolute;
     inset: 0;
     pointer-events: none;
-    background: radial-gradient(ellipse at center, transparent 58%, rgba(0,0,0,0.45) 100%);
+    background: radial-gradient(ellipse at center, transparent 48%, rgba(10,5,0,0.35) 78%, rgba(5,2,0,0.78) 100%);
+  }
+  .tv-controls {
+    position: absolute;
+    right: 14px;
+    bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .knob {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #d8b877, #8a5a28 65%, #4a2f14 100%);
+    box-shadow: 0 2px 3px rgba(0,0,0,0.6), inset 0 0 2px rgba(0,0,0,0.5);
+    position: relative;
+  }
+  .knob::after {
+    content: "";
+    position: absolute;
+    top: 3px; left: 50%;
+    width: 2px; height: 9px;
+    background: rgba(0,0,0,0.55);
+    transform: translateX(-50%) rotate(20deg);
+    transform-origin: bottom center;
+  }
+  .speaker-grille {
+    display: grid;
+    grid-template-columns: repeat(4, 5px);
+    grid-auto-rows: 5px;
+    gap: 4px;
+  }
+  .speaker-grille span {
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #3a2e1e, #0e0b08 70%);
+    box-shadow: inset 0 0 1px rgba(0,0,0,0.8);
+  }
+  .tv-legs {
+    position: absolute;
+    left: 50%;
+    bottom: -26px;
+    transform: translateX(-50%);
+    width: 640px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .tv-legs .leg {
+    width: 22px;
+    height: 26px;
+    background: linear-gradient(#5a3c20, #2a1a0c);
+    clip-path: polygon(20% 0%, 80% 0%, 100% 100%, 0% 100%);
+    box-shadow: 0 6px 10px rgba(0,0,0,0.6);
   }
 </style>
 </head>
 <body>
   <div class="tv-frame">
-    <div class="screen-wrap">
-      <canvas id="game" width="900" height="600"></canvas>
-      <div class="scanlines"></div>
-      <div class="vignette"></div>
+    <div class="tv-brand">БУЛЬБА-ТРОН 3000</div>
+    <div class="screen-bezel">
+      <div class="screen-wrap">
+        <canvas id="game" width="900" height="600"></canvas>
+        <div class="scanlines"></div>
+        <div class="crt-glass"></div>
+        <div class="vignette"></div>
+      </div>
     </div>
+    <div class="tv-controls">
+      <div class="speaker-grille">
+        <span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <div class="knob"></div>
+      <div class="knob"></div>
+    </div>
+    <div class="tv-legs"><div class="leg"></div><div class="leg"></div></div>
   </div>
 
 <script>
@@ -87,6 +195,13 @@ const COLORS = {
   grenade: "#3f8f4f",
   bazooka: "#c8c8c8",
   fuse: "#ffe27a",
+  tomato: "#d8402a",
+  tomatoLeaf: "#3f8f4f",
+  crateWood: "#a8762e",
+  crateBand: "#5a3c1a",
+  crateHealBox: "#f0ece0",
+  crateHealCross: "#d8302a",
+  chute: "#d8c8a8",
 };
 
 const GRAVITY = 780;
@@ -101,11 +216,19 @@ const AIM_SPEED = 1.6;
 const CHARGE_TIME = 1.1;
 const WORM_HIT_RADIUS = 14;
 const GUN_LEN = 22;
+const TURN_TIME_LIMIT = 45;
+const RETREAT_TIME = 5;
+const MATCH_TIME_LIMIT = 240;
+const WATER_RISE_SPEED = 15;
+const WATER_BASE_LEVEL = CH - 40;
 
 const WEAPONS = {
   bazooka: { minSpeed: 260, maxSpeed: 620, radius: 34, damage: 34 },
   grenade: { minSpeed: 220, maxSpeed: 480, radius: 40, damage: 30, fuse: 2.6 },
+  supergrenade: { minSpeed: 220, maxSpeed: 480, radius: 62, damage: 55, fuse: 2.6 },
 };
+
+function isGrenadeLike(type) { return type === "grenade" || type === "supergrenade"; }
 
 function clamp(v, min, max) { return v < min ? min : (v > max ? max : v); }
 
@@ -127,6 +250,58 @@ const WORM_WALK1 = WORM_IDLE.slice(0, 9).concat(["....OO.."]);
 const PLAYER_COLORS = { O: COLORS.outline, B: COLORS.playerBody, S: COLORS.playerShade, E: COLORS.white, P: COLORS.outline };
 const AI_COLORS = { O: COLORS.outline, B: COLORS.aiBody, S: COLORS.aiShade, E: COLORS.white, P: COLORS.outline };
 
+const ACC_CAP = [
+  "........",
+  ".AAAAAA.",
+  "AAAAAAAA",
+  "........",
+  "........",
+  "........",
+  "........",
+  "........",
+  "........",
+  "........",
+];
+const ACC_BANDANA = [
+  "........",
+  "........",
+  "AAAAAAAA",
+  ".......A",
+  "........",
+  "........",
+  "........",
+  "........",
+  "........",
+  "........",
+];
+const ACC_SHADES = [
+  "........",
+  "........",
+  "........",
+  "..AAAA..",
+  "........",
+  "........",
+  "........",
+  "........",
+  "........",
+  "........",
+];
+const ACC_MOHAWK = [
+  "...AA...",
+  "...AA...",
+  "........",
+  "........",
+  "........",
+  "........",
+  "........",
+  "........",
+  "........",
+  "........",
+];
+const ACCESSORY_PATTERNS = [ACC_CAP, ACC_BANDANA, ACC_SHADES, ACC_MOHAWK];
+const ACCESSORY_COLORS = ["#3a6fd8", "#d8903a", "#232a30", "#ff5fb0"];
+const ACCESSORY_NAMES = ["в кепке", "в бандане", "в очках", "с ирокезом"];
+
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 ctx.imageSmoothingEnabled = false;
@@ -142,6 +317,8 @@ let terrain = null;
 let worms = [];
 let projectiles = [];
 let explosions = [];
+let floaters = [];
+let crates = [];
 
 const state = {
   screen: "MENU",
@@ -151,7 +328,16 @@ const state = {
   playerWeapon: "bazooka",
   aiWeapon: "bazooka",
   aiPauseTimer: 0,
+  aiMoveDir: 0,
+  aiMoveTimer: 0,
   playerWon: false,
+  playerSuperGrenade: false,
+  aiSuperGrenade: false,
+  turnCount: 0,
+  turnTimer: TURN_TIME_LIMIT,
+  matchTimer: MATCH_TIME_LIMIT,
+  suddenDeath: false,
+  waterLevel: WATER_BASE_LEVEL,
 };
 
 const keysDown = new Set();
@@ -180,8 +366,8 @@ function generateTerrain() {
     prev = v;
   }
   for (let x = 0; x < CW; x++) {
-    const top = clamp(Math.round(h[x]), 0, CH - 1);
-    for (let y = top; y < CH; y++) mask[y * CW + x] = 1;
+    const top = clamp(Math.round(h[x]), 0, WATER_BASE_LEVEL - 1);
+    for (let y = top; y < WATER_BASE_LEVEL; y++) mask[y * CW + x] = 1;
   }
   return { mask, heights: new Float32Array(CW) };
 }
@@ -293,7 +479,8 @@ function drawSprite(pattern, x, y, scale, colorMap, flipX) {
 function drawAimLine(worm) {
   const originX = worm.x;
   const originY = worm.y - 24;
-  const dx = Math.cos(worm.aimAngle) * worm.facing;
+  const facing = (state.screen === "AI_MOVING" && worm.shootFacing !== undefined) ? worm.shootFacing : worm.facing;
+  const dx = Math.cos(worm.aimAngle) * facing;
   const dy = Math.sin(worm.aimAngle);
   ctx.strokeStyle = COLORS.outline;
   ctx.lineWidth = 3;
@@ -315,8 +502,23 @@ function drawHpBar(worm, y) {
   ctx.strokeRect(bx + 0.5, y + 0.5, bw - 1, 5 - 1);
 }
 
+function drawNameAndHp(worm, y) {
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  ctx.font = "bold 10px monospace";
+  const label = worm.name + " " + worm.hp;
+  ctx.fillStyle = COLORS.outline;
+  ctx.fillText(label, worm.x + 1, y + 1);
+  ctx.fillStyle = worm.team === "player" ? COLORS.playerBody : COLORS.aiBody;
+  ctx.fillText(label, worm.x, y);
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+}
+
+const AIM_VISIBLE_SCREENS = new Set(["PLAYER_TURN", "AI_TURN", "AI_MOVING", "AI_CHARGING"]);
+
 function isActiveShooter(worm) {
-  if (state.screen !== "PLAYER_TURN" && state.screen !== "AI_TURN" && state.screen !== "AI_CHARGING") return false;
+  if (!AIM_VISIBLE_SCREENS.has(state.screen)) return false;
   return worm === getActiveWorm(state.turn);
 }
 
@@ -329,16 +531,26 @@ function drawWorm(worm) {
   const flip = worm.facing < 0;
   const colorMap = worm.team === "player" ? PLAYER_COLORS : AI_COLORS;
   drawSprite(pattern, worm.x - spriteW / 2, worm.y - spriteH, scale, colorMap, flip);
+  const accPattern = ACCESSORY_PATTERNS[worm.accessoryIdx];
+  drawSprite(accPattern, worm.x - spriteW / 2, worm.y - spriteH, scale, { A: ACCESSORY_COLORS[worm.accessoryIdx] }, flip);
   if (isActiveShooter(worm)) drawAimLine(worm);
   drawHpBar(worm, worm.y - spriteH - 10);
+  drawNameAndHp(worm, worm.y - spriteH - 13);
 }
 
 function drawProjectile(p) {
   ctx.fillStyle = COLORS.outline;
   ctx.fillRect(p.x - 3, p.y - 3, 6, 6);
-  ctx.fillStyle = p.type === "bazooka" ? COLORS.bazooka : COLORS.grenade;
-  ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
-  if (p.type === "grenade" && Math.floor(p.fuse * 8) % 2 === 0) {
+  if (p.type === "supergrenade") {
+    ctx.fillStyle = COLORS.tomato;
+    ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+    ctx.fillStyle = COLORS.tomatoLeaf;
+    ctx.fillRect(p.x - 1, p.y - 3, 2, 1);
+  } else {
+    ctx.fillStyle = p.type === "bazooka" ? COLORS.bazooka : COLORS.grenade;
+    ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+  }
+  if (isGrenadeLike(p.type) && Math.floor(p.fuse * 8) % 2 === 0) {
     ctx.fillStyle = COLORS.fuse;
     ctx.fillRect(p.x - 1, p.y - 6, 2, 2);
   }
@@ -366,6 +578,116 @@ function drawExplosions() {
   }
 }
 
+const HIT_PHRASES = ["УУХ!", "ООЙ!", "УУПС!", "АЙ!", "ОГО!", "БЛИН!"];
+
+function spawnFloater(x, y, text) {
+  floaters.push({ x, y, text, timer: 1.1, duration: 1.1 });
+}
+
+function updateFloaters(dt) {
+  for (let i = floaters.length - 1; i >= 0; i--) {
+    const f = floaters[i];
+    f.timer -= dt;
+    f.y -= 22 * dt;
+    if (f.timer <= 0) floaters.splice(i, 1);
+  }
+}
+
+function drawFloaters() {
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  ctx.font = "bold 13px monospace";
+  for (const f of floaters) {
+    const alpha = clamp(f.timer / f.duration, 0, 1);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillText(f.text, f.x + 1, f.y + 1);
+    ctx.fillStyle = COLORS.fire1;
+    ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+}
+
+const CRATE_FALL_SPEED = 55;
+const CRATE_PICKUP_RADIUS = 22;
+const CRATE_HEAL_AMOUNT = 30;
+
+function trySpawnCrate() {
+  if (crates.length > 0) return;
+  if (state.turnCount === 0 || state.turnCount % 3 !== 0) return;
+  if (Math.random() >= 0.2) return;
+  const x = 60 + Math.random() * (CW - 120);
+  const kind = Math.random() < 0.5 ? "heal" : "weapon";
+  crates.push({ x, y: -20, vy: CRATE_FALL_SPEED, landed: false, kind });
+}
+
+function applyCrateEffect(worm, kind) {
+  if (kind === "heal") {
+    worm.hp = Math.min(worm.maxHp, worm.hp + CRATE_HEAL_AMOUNT);
+    spawnFloater(worm.x, worm.y - 60, "+" + CRATE_HEAL_AMOUNT + " HP");
+  } else {
+    if (worm.team === "player") state.playerSuperGrenade = true;
+    else state.aiSuperGrenade = true;
+    spawnFloater(worm.x, worm.y - 60, "ТОМАТ-ГРАНАТА!");
+  }
+}
+
+function updateCrates(dt) {
+  for (let i = crates.length - 1; i >= 0; i--) {
+    const c = crates[i];
+    if (!c.landed) {
+      c.y += c.vy * dt;
+      const groundCol = clamp(Math.round(c.x), 0, CW - 1);
+      const groundY = terrain.heights[groundCol];
+      if (c.y >= groundY) {
+        c.y = groundY;
+        c.landed = true;
+      }
+    }
+    const hitWorm = findWormNear(c.x, c.y - 10, CRATE_PICKUP_RADIUS);
+    if (hitWorm) {
+      applyCrateEffect(hitWorm, c.kind);
+      crates.splice(i, 1);
+    }
+  }
+}
+
+function drawCrates() {
+  for (const c of crates) {
+    if (!c.landed) {
+      ctx.strokeStyle = COLORS.chute;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(c.x - 12, c.y - 18);
+      ctx.lineTo(c.x - 5, c.y - 6);
+      ctx.moveTo(c.x + 12, c.y - 18);
+      ctx.lineTo(c.x + 5, c.y - 6);
+      ctx.stroke();
+      ctx.fillStyle = COLORS.chute;
+      ctx.beginPath();
+      ctx.ellipse(c.x, c.y - 22, 14, 8, 0, Math.PI, 0);
+      ctx.fill();
+    }
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillRect(c.x - 9, c.y - 12, 18, 12);
+    if (c.kind === "heal") {
+      ctx.fillStyle = COLORS.crateHealBox;
+      ctx.fillRect(c.x - 8, c.y - 11, 16, 10);
+      ctx.fillStyle = COLORS.crateHealCross;
+      ctx.fillRect(c.x - 6, c.y - 7, 12, 2);
+      ctx.fillRect(c.x - 1, c.y - 10, 2, 8);
+    } else {
+      ctx.fillStyle = COLORS.crateWood;
+      ctx.fillRect(c.x - 8, c.y - 11, 16, 10);
+      ctx.fillStyle = COLORS.crateBand;
+      ctx.fillRect(c.x - 8, c.y - 7, 16, 2);
+      ctx.fillRect(c.x - 1, c.y - 11, 2, 10);
+    }
+  }
+}
+
 function drawSky() {
   ctx.fillStyle = COLORS.sky1;
   ctx.fillRect(0, 0, CW, CH);
@@ -377,11 +699,17 @@ function drawSky() {
 
 // ===== WORMS / ENTITIES =====
 
+const PLAYER_NAMES = ["СПАЙК", "ДЮК", "ВЖИК", "БАТОН"];
+const AI_NAMES = ["ГРЫЗЬ", "ШНОБЕЛЬ", "ХРЯЩ", "БИВЕНЬ"];
+
 function makeWorm(team, idx, x) {
   const groundY = terrain.heights[clamp(Math.round(x), 0, CW - 1)];
+  const names = team === "player" ? PLAYER_NAMES : AI_NAMES;
   return {
     team, idx, x, y: groundY, vy: 0,
     hp: 100, maxHp: 100, alive: true,
+    name: names[idx % names.length],
+    accessoryIdx: (team === "player" ? 0 : 2) + (idx % 2),
     facing: team === "player" ? 1 : -1,
     aimAngle: -30 * Math.PI / 180,
     power: 0, charging: false, targetPower: 0,
@@ -393,15 +721,19 @@ function teamWorms(team) { return worms.filter(w => w.team === team); }
 
 function getActiveWorm(team) { return teamWorms(team)[state.activeIndex[team]]; }
 
-function ensureActiveWormAlive(team) {
+function advanceActiveWorm(team) {
   const arr = teamWorms(team);
-  if (!arr[state.activeIndex[team]].alive) {
-    const idx = arr.findIndex(w => w.alive);
-    if (idx >= 0) state.activeIndex[team] = idx;
-  }
+  if (!arr.some(w => w.alive)) return;
+  let next = (state.activeIndex[team] + 1) % arr.length;
+  while (!arr[next].alive) next = (next + 1) % arr.length;
+  state.activeIndex[team] = next;
 }
 
 function applyDamage(worm, dmg) {
+  if (dmg > 0 && worm.alive) {
+    const phrase = HIT_PHRASES[Math.floor(Math.random() * HIT_PHRASES.length)];
+    spawnFloater(worm.x, worm.y - 60, phrase);
+  }
   worm.hp = Math.max(0, worm.hp - dmg);
   if (worm.hp <= 0 && worm.alive) worm.alive = false;
 }
@@ -489,7 +821,7 @@ function spawnProjectile(worm, type, power) {
 }
 
 function handleTerrainHit(p, x, y) {
-  if (p.type === "grenade" && p.bounces < 1) {
+  if (isGrenadeLike(p.type) && p.bounces < 1) {
     p.bounces++;
     p.x = x;
     p.y = y - 3;
@@ -505,10 +837,10 @@ function handleTerrainHit(p, x, y) {
 function updateProjectiles(dt) {
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i];
-    if (p.type === "grenade") {
+    if (isGrenadeLike(p.type)) {
       p.fuse -= dt;
       if (p.fuse <= 0) {
-        const cfg = WEAPONS.grenade;
+        const cfg = WEAPONS[p.type];
         explode(p.x, p.y, cfg.radius, cfg.damage);
         projectiles.splice(i, 1);
         continue;
@@ -549,6 +881,69 @@ function updateProjectiles(dt) {
   }
 }
 
+// ===== TIMERS / SUDDEN DEATH =====
+
+function updateTurnTimer(dt) {
+  if (state.turn !== "player") return;
+  if (state.screen !== "PLAYER_TURN" && state.screen !== "PROJECTILE" && state.screen !== "EXPLOSION") return;
+  state.turnTimer = Math.max(0, state.turnTimer - dt);
+  if (state.turnTimer <= 0 && state.screen === "PLAYER_TURN") {
+    resolveAfterExplosion();
+  }
+}
+
+function handlePlayerRetreatMovement(dt) {
+  if (state.turn !== "player") return;
+  if (state.screen !== "PROJECTILE" && state.screen !== "EXPLOSION") return;
+  if (state.turnTimer <= 0) return;
+  const worm = getActiveWorm("player");
+  if (!worm || !worm.alive || worm.state === "falling") return;
+  if (keysDown.has("ArrowLeft")) { tryMove(worm, -1, dt); worm.animState = "walk"; worm.animTimer += dt; }
+  else if (keysDown.has("ArrowRight")) { tryMove(worm, 1, dt); worm.animState = "walk"; worm.animTimer += dt; }
+  else worm.animState = "idle";
+}
+
+function updateMatchTimer(dt) {
+  if (!state.suddenDeath) {
+    state.matchTimer -= dt;
+    if (state.matchTimer <= 0) {
+      state.matchTimer = 0;
+      state.suddenDeath = true;
+    }
+  } else {
+    state.waterLevel -= WATER_RISE_SPEED * dt;
+  }
+}
+
+function updateWaterDamage() {
+  let anyDrowned = false;
+  for (const w of worms) {
+    if (!w.alive) continue;
+    if (w.y >= state.waterLevel) {
+      w.hp = 0;
+      w.alive = false;
+      spawnFloater(w.x, w.y - 60, "ТОНЕТ!");
+      anyDrowned = true;
+    }
+  }
+  if (anyDrowned) {
+    const playerAlive = teamWorms("player").some(w => w.alive);
+    const aiAlive = teamWorms("ai").some(w => w.alive);
+    if (!playerAlive || !aiAlive) {
+      state.screen = "GAME_OVER";
+      state.playerWon = playerAlive;
+    }
+  }
+}
+
+function drawWater() {
+  const y = clamp(state.waterLevel, 0, CH);
+  ctx.fillStyle = "rgba(40,90,160,0.55)";
+  ctx.fillRect(0, y, CW, CH - y);
+  ctx.fillStyle = "rgba(150,200,235,0.6)";
+  ctx.fillRect(0, y, CW, 3);
+}
+
 // ===== TURN / STATE MACHINE =====
 
 function allWormsGrounded() {
@@ -568,9 +963,12 @@ function resolveAfterExplosion() {
     return;
   }
   state.turn = state.turn === "player" ? "ai" : "player";
-  ensureActiveWormAlive(state.turn);
+  advanceActiveWorm(state.turn);
+  state.turnCount++;
+  trySpawnCrate();
   if (state.turn === "player") {
     state.wind = Math.random() * 2 - 1;
+    state.turnTimer = TURN_TIME_LIMIT;
     state.screen = "PLAYER_TURN";
   } else {
     state.aiPauseTimer = 0.9;
@@ -582,9 +980,24 @@ function selectWeapon(type) {
   if (state.screen === "PLAYER_TURN") state.playerWeapon = type;
 }
 
+const AIR_MOVE_SPEED = 120;
+
+function tryAirMove(worm, dir, dt) {
+  worm.x = clamp(worm.x + dir * AIR_MOVE_SPEED * dt, 10, CW - 10);
+  worm.facing = dir;
+}
+
 function updatePlayerTurn(dt) {
   const worm = getActiveWorm("player");
-  if (!worm || !worm.alive || worm.state === "falling") return;
+  if (!worm || !worm.alive) return;
+  if (worm.state === "falling") {
+    let airMoving = false;
+    if (keysDown.has("ArrowLeft")) { tryAirMove(worm, -1, dt); airMoving = true; }
+    if (keysDown.has("ArrowRight")) { tryAirMove(worm, 1, dt); airMoving = true; }
+    worm.animState = airMoving ? "walk" : "idle";
+    if (airMoving) worm.animTimer += dt;
+    return;
+  }
   let moving = false;
   if (keysDown.has("ArrowLeft")) { tryMove(worm, -1, dt); moving = true; }
   if (keysDown.has("ArrowRight")) { tryMove(worm, 1, dt); moving = true; }
@@ -609,8 +1022,24 @@ function handleSpaceRelease() {
   if (!worm || !worm.alive || !worm.charging) return;
   worm.charging = false;
   const power = Math.max(worm.power, 0.12);
-  spawnProjectile(worm, state.playerWeapon, power);
+  let weaponType = state.playerWeapon;
+  if (weaponType === "grenade" && state.playerSuperGrenade) {
+    weaponType = "supergrenade";
+    state.playerSuperGrenade = false;
+  }
+  spawnProjectile(worm, weaponType, power);
   worm.power = 0;
+  state.turnTimer = RETREAT_TIME;
+}
+
+const JUMP_VY = -260;
+
+function handleJump() {
+  if (state.screen !== "PLAYER_TURN") return;
+  const worm = getActiveWorm("player");
+  if (!worm || !worm.alive || worm.state === "falling") return;
+  worm.vy = JUMP_VY;
+  worm.state = "falling";
 }
 
 function pickPlayerTarget(aiWorm) {
@@ -623,7 +1052,12 @@ function updateAiTurnPause(dt) {
   state.aiPauseTimer -= dt;
   if (state.aiPauseTimer <= 0) {
     prepareAiShot();
-    state.screen = "AI_CHARGING";
+    if (state.aiMoveTimer > 0) {
+      state.screen = "AI_MOVING";
+    } else {
+      getActiveWorm("ai").charging = true;
+      state.screen = "AI_CHARGING";
+    }
   }
 }
 
@@ -632,6 +1066,7 @@ function prepareAiShot() {
   const target = pickPlayerTarget(worm);
   const dx = target.x - worm.x;
   worm.facing = dx >= 0 ? 1 : -1;
+  worm.shootFacing = worm.facing;
   const dist = Math.abs(dx);
   state.aiWeapon = Math.random() < 0.7 ? "bazooka" : "grenade";
   let angle = -50 * Math.PI / 180;
@@ -642,7 +1077,35 @@ function prepareAiShot() {
   worm.aimAngle = clamp(angle, -MAX_AIM, MAX_AIM);
   worm.targetPower = power;
   worm.power = 0;
-  worm.charging = true;
+
+  const lookAheadCol = clamp(Math.round(worm.x + worm.facing * 24), 0, CW - 1);
+  const curCol = clamp(Math.round(worm.x), 0, CW - 1);
+  const nearEdge = Math.abs(terrain.heights[lookAheadCol] - terrain.heights[curCol]) > FALL_TRIGGER;
+  if (nearEdge || Math.random() < 0.4) {
+    state.aiMoveDir = -worm.facing;
+    state.aiMoveTimer = 0.5 + Math.random() * 0.4;
+  } else {
+    state.aiMoveDir = 0;
+    state.aiMoveTimer = 0;
+  }
+}
+
+function updateAiMoving(dt) {
+  const worm = getActiveWorm("ai");
+  state.aiMoveTimer -= dt;
+  if (state.aiMoveDir !== 0 && worm.state !== "falling") {
+    tryMove(worm, state.aiMoveDir, dt);
+    worm.animState = "walk";
+    worm.animTimer += dt;
+  } else {
+    worm.animState = "idle";
+  }
+  if (state.aiMoveTimer <= 0) {
+    worm.animState = "idle";
+    worm.facing = worm.shootFacing;
+    worm.charging = true;
+    state.screen = "AI_CHARGING";
+  }
 }
 
 function updateAiCharging(dt) {
@@ -650,7 +1113,12 @@ function updateAiCharging(dt) {
   worm.power = Math.min(worm.targetPower, worm.power + dt / (CHARGE_TIME * 0.6));
   if (worm.power >= worm.targetPower - 0.001) {
     worm.charging = false;
-    spawnProjectile(worm, state.aiWeapon, worm.power);
+    let weaponType = state.aiWeapon;
+    if (weaponType === "grenade" && state.aiSuperGrenade) {
+      weaponType = "supergrenade";
+      state.aiSuperGrenade = false;
+    }
+    spawnProjectile(worm, weaponType, worm.power);
     worm.power = 0;
   }
 }
@@ -668,10 +1136,19 @@ function startMatch() {
   ];
   projectiles = [];
   explosions = [];
+  floaters = [];
+  crates = [];
   state.turn = "player";
   state.activeIndex = { player: 0, ai: 0 };
   state.wind = Math.random() * 2 - 1;
   state.playerWeapon = "bazooka";
+  state.playerSuperGrenade = false;
+  state.aiSuperGrenade = false;
+  state.turnCount = 0;
+  state.turnTimer = TURN_TIME_LIMIT;
+  state.matchTimer = MATCH_TIME_LIMIT;
+  state.suddenDeath = false;
+  state.waterLevel = WATER_BASE_LEVEL;
   state.screen = "PLAYER_TURN";
 }
 
@@ -691,10 +1168,29 @@ function drawHUD() {
   const windArrow = state.wind > 0.05 ? "→" : (state.wind < -0.05 ? "←" : "-");
   ctx.fillText("ВЕТЕР " + windArrow + " " + Math.abs(Math.round(state.wind * 10)), 340, 10);
   const weaponName = state.turn === "player" ? state.playerWeapon : state.aiWeapon;
-  ctx.fillText(weaponName === "bazooka" ? "БАЗУКА [1]" : "ГРАНАТА [2]", 620, 10);
+  const hasSuper = state.turn === "player" ? state.playerSuperGrenade : state.aiSuperGrenade;
+  let weaponLabel = weaponName === "bazooka" ? "БАЗУКА [1]" : "ГРАНАТА [2]";
+  if (hasSuper) weaponLabel += " +ТОМАТ";
+  ctx.fillText(weaponLabel, 620, 10);
+
+  ctx.font = "12px monospace";
+  if (state.turn === "player" && (state.screen === "PLAYER_TURN" || state.screen === "PROJECTILE" || state.screen === "EXPLOSION")) {
+    ctx.fillStyle = state.turnTimer <= 5 ? COLORS.hpRed : COLORS.white;
+    ctx.fillText("ХОД: " + Math.ceil(state.turnTimer) + "с", 14, 30);
+  }
+  if (state.suddenDeath) {
+    ctx.textAlign = "center";
+    ctx.fillStyle = COLORS.hpRed;
+    ctx.fillText("ВНЕЗАПНАЯ СМЕРТЬ — ВОДА ПОДНИМАЕТСЯ!", CW / 2, 30);
+    ctx.textAlign = "left";
+  } else {
+    ctx.fillStyle = COLORS.white;
+    ctx.fillText("ДО ВОДЫ: " + Math.ceil(state.matchTimer) + "с", 700, 30);
+  }
+
   const shooter = getActiveWorm(state.turn);
   if (shooter && shooter.charging) {
-    const bw = 220, bh = 14, bx = (CW - bw) / 2, by = CH - 32;
+    const bw = 220, bh = 14, bx = (CW - bw) / 2, by = CH - 46;
     ctx.fillStyle = COLORS.hpBg;
     ctx.fillRect(bx, by, bw, bh);
     ctx.fillStyle = COLORS.fire1;
@@ -702,6 +1198,22 @@ function drawHUD() {
     ctx.strokeStyle = COLORS.outline;
     ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
   }
+  drawControlHints();
+}
+
+function drawControlHints() {
+  ctx.fillStyle = "rgba(10,8,6,0.6)";
+  ctx.fillRect(0, CH - 20, CW, 20);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = "12px monospace";
+  ctx.fillStyle = COLORS.white;
+  ctx.fillText(
+    "←→ ДВИЖЕНИЕ   ↑↓ ПРИЦЕЛ   SHIFT ПРЫЖОК   SPACE ВЫСТРЕЛ   1/2 ОРУЖИЕ",
+    CW / 2, CH - 10
+  );
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
 }
 
 function drawMenu() {
@@ -711,16 +1223,16 @@ function drawMenu() {
   ctx.textBaseline = "alphabetic";
   ctx.fillStyle = COLORS.white;
   ctx.font = "bold 42px monospace";
-  ctx.fillText("ДУЭЛЬ ЧЕРВЯКОВ", CW / 2, 150);
+  ctx.fillText("BULBA BATTLE", CW / 2, 150);
   ctx.font = "16px monospace";
-  ctx.fillText("8-БИТНАЯ АРТИЛЛЕРИЙСКАЯ ДУЭЛЬ", CW / 2, 200);
+  ctx.fillText("8-БИТНАЯ БУЛЬБЯНАЯ ДУЭЛЬ", CW / 2, 200);
   ctx.font = "bold 20px monospace";
   ctx.fillStyle = COLORS.fire1;
   ctx.fillText("ENTER — НАЧАТЬ БОЙ", CW / 2, 280);
   ctx.font = "15px monospace";
   ctx.fillStyle = COLORS.white;
   const lines = [
-    "← → — ДВИЖЕНИЕ",
+    "← → — ДВИЖЕНИЕ      SHIFT — ПРЫЖОК",
     "↑ ↓ — УГОЛ ПРИЦЕЛА",
     "SPACE (ДЕРЖАТЬ / ОТПУСТИТЬ) — СИЛА И ВЫСТРЕЛ",
     "1 — БАЗУКА     2 — ГРАНАТА",
@@ -745,7 +1257,7 @@ function drawGameOver() {
 
 // ===== INPUT =====
 
-const BLOCKED_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space"]);
+const BLOCKED_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space", "ShiftLeft", "ShiftRight"]);
 
 window.addEventListener("keydown", (e) => {
   if (BLOCKED_KEYS.has(e.code)) e.preventDefault();
@@ -754,6 +1266,7 @@ window.addEventListener("keydown", (e) => {
   if (!e.repeat) {
     if (e.code === "Digit1") selectWeapon("bazooka");
     if (e.code === "Digit2") selectWeapon("grenade");
+    if (e.code === "ShiftLeft" || e.code === "ShiftRight") handleJump();
   }
   keysDown.add(e.code);
 });
@@ -769,26 +1282,38 @@ window.addEventListener("blur", () => keysDown.clear());
 // ===== MAIN LOOP =====
 
 function update(dt) {
-  if (state.screen === "MENU") { updateExplosionEffects(dt); return; }
+  if (state.screen === "MENU") { updateExplosionEffects(dt); updateFloaters(dt); return; }
   for (const w of worms) updateWormPhysics(w, dt);
   switch (state.screen) {
     case "PLAYER_TURN": updatePlayerTurn(dt); break;
     case "PROJECTILE": updateProjectiles(dt); break;
     case "EXPLOSION": updateExplosionState(); break;
     case "AI_TURN": updateAiTurnPause(dt); break;
+    case "AI_MOVING": updateAiMoving(dt); break;
     case "AI_CHARGING": updateAiCharging(dt); break;
   }
   updateExplosionEffects(dt);
+  updateFloaters(dt);
+  updateCrates(dt);
+  updateTurnTimer(dt);
+  handlePlayerRetreatMovement(dt);
+  if (state.screen !== "GAME_OVER") {
+    updateMatchTimer(dt);
+    updateWaterDamage();
+  }
 }
 
 function render() {
   drawSky();
   ctx.drawImage(terrainCanvas, 0, 0);
   if (state.screen !== "MENU") {
+    drawCrates();
     for (const w of worms) if (w.alive) drawWorm(w);
     for (const p of projectiles) drawProjectile(p);
   }
   drawExplosions();
+  if (state.screen !== "MENU") drawWater();
+  drawFloaters();
   drawHUD();
   if (state.screen === "MENU") drawMenu();
   if (state.screen === "GAME_OVER") drawGameOver();
