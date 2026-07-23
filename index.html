@@ -319,6 +319,8 @@ let projectiles = [];
 let explosions = [];
 let floaters = [];
 let crates = [];
+let mines = [];
+let waterTime = 0;
 
 const state = {
   screen: "MENU",
@@ -338,6 +340,7 @@ const state = {
   matchTimer: MATCH_TIME_LIMIT,
   suddenDeath: false,
   waterLevel: WATER_BASE_LEVEL,
+  banner: null,
 };
 
 const keysDown = new Set();
@@ -610,6 +613,36 @@ function drawFloaters() {
   ctx.textBaseline = "top";
 }
 
+const BANNER_DURATION = 1.6;
+
+function announce(text, color) {
+  state.banner = { text, color: color || COLORS.white, timer: BANNER_DURATION };
+}
+
+function updateBanner(dt) {
+  if (!state.banner) return;
+  state.banner.timer -= dt;
+  if (state.banner.timer <= 0) state.banner = null;
+}
+
+function drawBanner() {
+  if (!state.banner) return;
+  const b = state.banner;
+  const t = b.timer / BANNER_DURATION;
+  const alpha = t > 0.72 ? (1 - t) / 0.28 : (t < 0.25 ? t / 0.25 : 1);
+  ctx.globalAlpha = clamp(alpha, 0, 1);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = "bold 30px monospace";
+  ctx.fillStyle = COLORS.outline;
+  ctx.fillText(b.text, CW / 2 + 2, 212);
+  ctx.fillStyle = b.color;
+  ctx.fillText(b.text, CW / 2, 210);
+  ctx.globalAlpha = 1;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+}
+
 const CRATE_FALL_SPEED = 55;
 const CRATE_PICKUP_RADIUS = 22;
 const CRATE_HEAL_AMOUNT = 30;
@@ -627,10 +660,12 @@ function applyCrateEffect(worm, kind) {
   if (kind === "heal") {
     worm.hp = Math.min(worm.maxHp, worm.hp + CRATE_HEAL_AMOUNT);
     spawnFloater(worm.x, worm.y - 60, "+" + CRATE_HEAL_AMOUNT + " HP");
+    announce(worm.name + ": АПТЕЧКА +" + CRATE_HEAL_AMOUNT + " HP", COLORS.hpGreen);
   } else {
     if (worm.team === "player") state.playerSuperGrenade = true;
     else state.aiSuperGrenade = true;
     spawnFloater(worm.x, worm.y - 60, "ТОМАТ-ГРАНАТА!");
+    announce(worm.name + ": СУПЕР-ГРАНАТА ПОМИДОР!", COLORS.tomato);
   }
 }
 
@@ -685,6 +720,93 @@ function drawCrates() {
       ctx.fillRect(c.x - 8, c.y - 7, 16, 2);
       ctx.fillRect(c.x - 1, c.y - 11, 2, 10);
     }
+  }
+}
+
+const MINE_COUNT = 4;
+const MINE_TRIGGER_RADIUS = 34;
+const MINE_FUSE = 0.55;
+const MINE_RADIUS = 65;
+const MINE_DAMAGE = 35;
+const MINE_SAFE_SCREENS = new Set(["PLAYER_TURN", "AI_TURN", "AI_MOVING", "AI_CHARGING"]);
+
+function placeMines() {
+  mines = [];
+  let attempts = 0;
+  while (mines.length < MINE_COUNT && attempts < 200) {
+    attempts++;
+    const x = 70 + Math.random() * (CW - 140);
+    const tooCloseToWorm = worms.some(w => Math.abs(w.x - x) < 70);
+    const tooCloseToMine = mines.some(m => Math.abs(m.x - x) < 90);
+    if (tooCloseToWorm || tooCloseToMine) continue;
+    const col = clamp(Math.round(x), 0, CW - 1);
+    mines.push({ x: col, y: terrain.heights[col], vy: 0, armed: false, fuse: 0 });
+  }
+}
+
+function updateMines(dt) {
+  for (const mine of mines) {
+    const groundCol = clamp(Math.round(mine.x), 0, CW - 1);
+    const groundY = terrain.heights[groundCol];
+    if (mine.y < groundY - 2) {
+      mine.vy += GRAVITY * dt;
+      mine.y += mine.vy * dt;
+      if (mine.y >= groundY) { mine.y = groundY; mine.vy = 0; }
+    } else {
+      mine.y = groundY;
+      mine.vy = 0;
+    }
+
+    if (!mine.armed) {
+      const triggered = worms.some(w => w.alive && Math.hypot(w.x - mine.x, w.y - mine.y) < MINE_TRIGGER_RADIUS);
+      if (triggered) {
+        mine.armed = true;
+        mine.fuse = MINE_FUSE;
+        spawnFloater(mine.x, mine.y - 20, "МИНА!");
+        announce("МИНА! БЕГИ!", COLORS.hpRed);
+      }
+      continue;
+    }
+    if (!MINE_SAFE_SCREENS.has(state.screen)) continue;
+    mine.fuse -= dt;
+    if (mine.fuse <= 0) {
+      mine.exploded = true;
+      detonateMine(mine);
+    }
+  }
+  mines = mines.filter(m => !m.exploded);
+}
+
+function detonateMine(mine) {
+  spawnExplosionEffect(mine.x, mine.y, MINE_RADIUS);
+  digCrater(mine.x, mine.y, MINE_RADIUS);
+  let hitAnyone = false;
+  for (const w of worms) {
+    if (!w.alive) continue;
+    const wy = w.y - 14;
+    const d = Math.hypot(w.x - mine.x, wy - mine.y);
+    if (d < MINE_RADIUS) {
+      const dmg = Math.round(MINE_DAMAGE * (1 - d / MINE_RADIUS));
+      applyDamage(w, Math.max(dmg, 1));
+      const ang = Math.atan2(wy - mine.y, w.x - mine.x);
+      w.vy = -80 - 60 * (1 - d / MINE_RADIUS);
+      w.x = clamp(w.x + Math.cos(ang) * 10, 10, CW - 10);
+      w.state = "falling";
+      hitAnyone = true;
+    }
+  }
+  if (hitAnyone) state.screen = "EXPLOSION";
+}
+
+function drawMines() {
+  for (const m of mines) {
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillRect(m.x - 7, m.y - 7, 14, 7);
+    ctx.fillStyle = "#3c3c3c";
+    ctx.fillRect(m.x - 6, m.y - 6, 12, 5);
+    const blink = m.armed && Math.floor(m.fuse * 10) % 2 === 0;
+    ctx.fillStyle = blink ? "#ff3020" : "#901810";
+    ctx.fillRect(m.x - 2, m.y - 9, 4, 3);
   }
 }
 
@@ -936,12 +1058,26 @@ function updateWaterDamage() {
   }
 }
 
+function updateWaterAnim(dt) {
+  waterTime += dt;
+}
+
 function drawWater() {
   const y = clamp(state.waterLevel, 0, CH);
   ctx.fillStyle = "rgba(40,90,160,0.55)";
   ctx.fillRect(0, y, CW, CH - y);
-  ctx.fillStyle = "rgba(150,200,235,0.6)";
-  ctx.fillRect(0, y, CW, 3);
+
+  const step = 6;
+  ctx.fillStyle = "rgba(170,215,245,0.8)";
+  for (let x = 0; x <= CW; x += step) {
+    const wy = y + Math.round(Math.sin(x * 0.045 + waterTime * 2.2) * 3);
+    ctx.fillRect(x, wy, step - 1, 2);
+  }
+  ctx.fillStyle = "rgba(190,225,250,0.35)";
+  for (let x = 0; x <= CW; x += step) {
+    const wy = y + 9 + Math.round(Math.sin(x * 0.03 + waterTime * 1.5 + 2.4) * 3);
+    ctx.fillRect(x, wy, step - 1, 2);
+  }
 }
 
 // ===== TURN / STATE MACHINE =====
@@ -970,9 +1106,11 @@ function resolveAfterExplosion() {
     state.wind = Math.random() * 2 - 1;
     state.turnTimer = TURN_TIME_LIMIT;
     state.screen = "PLAYER_TURN";
+    announce("ХОД: " + getActiveWorm("player").name, COLORS.fire1);
   } else {
     state.aiPauseTimer = 0.9;
     state.screen = "AI_TURN";
+    announce("ХОД ПРОТИВНИКА: " + getActiveWorm("ai").name, COLORS.hpRed);
   }
 }
 
@@ -1078,12 +1216,19 @@ function prepareAiShot() {
   worm.targetPower = power;
   worm.power = 0;
 
+  const teammate = teamWorms("ai").find(w => w !== worm && w.alive);
+  const bunched = teammate && Math.abs(worm.x - teammate.x) < 70;
+
   const lookAheadCol = clamp(Math.round(worm.x + worm.facing * 24), 0, CW - 1);
   const curCol = clamp(Math.round(worm.x), 0, CW - 1);
   const nearEdge = Math.abs(terrain.heights[lookAheadCol] - terrain.heights[curCol]) > FALL_TRIGGER;
-  if (nearEdge || Math.random() < 0.4) {
+
+  if (bunched) {
+    state.aiMoveDir = worm.x < teammate.x ? -1 : 1;
+    state.aiMoveTimer = 0.6 + Math.random() * 0.4;
+  } else if (nearEdge) {
     state.aiMoveDir = -worm.facing;
-    state.aiMoveTimer = 0.5 + Math.random() * 0.4;
+    state.aiMoveTimer = 0.5 + Math.random() * 0.3;
   } else {
     state.aiMoveDir = 0;
     state.aiMoveTimer = 0;
@@ -1138,6 +1283,7 @@ function startMatch() {
   explosions = [];
   floaters = [];
   crates = [];
+  placeMines();
   state.turn = "player";
   state.activeIndex = { player: 0, ai: 0 };
   state.wind = Math.random() * 2 - 1;
@@ -1149,7 +1295,9 @@ function startMatch() {
   state.matchTimer = MATCH_TIME_LIMIT;
   state.suddenDeath = false;
   state.waterLevel = WATER_BASE_LEVEL;
+  state.banner = null;
   state.screen = "PLAYER_TURN";
+  announce("ХОД: " + getActiveWorm("player").name, COLORS.fire1);
 }
 
 function handleEnter() {
@@ -1294,8 +1442,11 @@ function update(dt) {
   }
   updateExplosionEffects(dt);
   updateFloaters(dt);
+  updateBanner(dt);
   updateCrates(dt);
+  updateMines(dt);
   updateTurnTimer(dt);
+  updateWaterAnim(dt);
   handlePlayerRetreatMovement(dt);
   if (state.screen !== "GAME_OVER") {
     updateMatchTimer(dt);
@@ -1307,6 +1458,7 @@ function render() {
   drawSky();
   ctx.drawImage(terrainCanvas, 0, 0);
   if (state.screen !== "MENU") {
+    drawMines();
     drawCrates();
     for (const w of worms) if (w.alive) drawWorm(w);
     for (const p of projectiles) drawProjectile(p);
@@ -1314,6 +1466,7 @@ function render() {
   drawExplosions();
   if (state.screen !== "MENU") drawWater();
   drawFloaters();
+  if (state.screen !== "MENU" && state.screen !== "GAME_OVER") drawBanner();
   drawHUD();
   if (state.screen === "MENU") drawMenu();
   if (state.screen === "GAME_OVER") drawGameOver();
