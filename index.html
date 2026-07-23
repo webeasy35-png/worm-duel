@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>ДУЭЛЬ ЧЕРВЯКОВ — 8-bit Artillery</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0b0b10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: monospace;
+  }
+  .tv-frame {
+    padding: 22px;
+    background: linear-gradient(#3c3c3c, #161616);
+    border-radius: 30px;
+    box-shadow: inset 0 0 14px #000, 0 10px 40px rgba(0,0,0,0.7);
+  }
+  .screen-wrap {
+    position: relative;
+    width: 900px;
+    height: 600px;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: inset 0 0 30px rgba(0,0,0,0.9);
+  }
+  canvas#game {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+  .scanlines {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(0,0,0,0.22) 0px,
+      rgba(0,0,0,0.22) 1px,
+      transparent 2px,
+      transparent 3px
+    );
+    mix-blend-mode: multiply;
+  }
+  .vignette {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 58%, rgba(0,0,0,0.45) 100%);
+  }
+</style>
+</head>
+<body>
+  <div class="tv-frame">
+    <div class="screen-wrap">
+      <canvas id="game" width="900" height="600"></canvas>
+      <div class="scanlines"></div>
+      <div class="vignette"></div>
+    </div>
+  </div>
+
+<script>
+"use strict";
+
+const CW = 900, CH = 600;
+
+const COLORS = {
+  sky1: "#141428",
+  sky2: "#242452",
+  dirt1: "#7a4a2a",
+  dirt2: "#4a2a18",
+  grass: "#3aa63a",
+  outline: "#100c0a",
+  white: "#f0ead8",
+  hpBg: "#241414",
+  hpGreen: "#3ac23a",
+  hpRed: "#c23a3a",
+  playerBody: "#e8c840",
+  playerShade: "#a08820",
+  aiBody: "#e0503a",
+  aiShade: "#96301f",
+  fire1: "#ffd25a",
+  fire2: "#ff6a2a",
+  grenade: "#3f8f4f",
+  bazooka: "#c8c8c8",
+  fuse: "#ffe27a",
+};
+
+const GRAVITY = 780;
+const WIND_STRENGTH = 70;
+const WALK_SPEED = 140;
+const MAX_CLIMB = 10;
+const FALL_TRIGGER = 14;
+const FALL_DAMAGE_THRESHOLD = 420;
+const FALL_DAMAGE_SCALE = 0.05;
+const MAX_AIM = 80 * Math.PI / 180;
+const AIM_SPEED = 1.6;
+const CHARGE_TIME = 1.1;
+const WORM_HIT_RADIUS = 14;
+const GUN_LEN = 22;
+
+const WEAPONS = {
+  bazooka: { minSpeed: 260, maxSpeed: 620, radius: 34, damage: 34 },
+  grenade: { minSpeed: 220, maxSpeed: 480, radius: 40, damage: 30, fuse: 2.6 },
+};
+
+function clamp(v, min, max) { return v < min ? min : (v > max ? max : v); }
+
+const WORM_IDLE = [
+  "..OOOO..",
+  ".OBBBBO.",
+  "OBBBBBBO",
+  "OBEPEPBO",
+  "OBBBBBBO",
+  "OBSBBSBO",
+  "OBBBBBBO",
+  ".OBBBBO.",
+  "..OOOO..",
+  "...OO...",
+];
+const WORM_WALK0 = WORM_IDLE.slice(0, 9).concat(["..OO...."]);
+const WORM_WALK1 = WORM_IDLE.slice(0, 9).concat(["....OO.."]);
+
+const PLAYER_COLORS = { O: COLORS.outline, B: COLORS.playerBody, S: COLORS.playerShade, E: COLORS.white, P: COLORS.outline };
+const AI_COLORS = { O: COLORS.outline, B: COLORS.aiBody, S: COLORS.aiShade, E: COLORS.white, P: COLORS.outline };
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+
+const terrainCanvas = document.createElement("canvas");
+terrainCanvas.width = CW;
+terrainCanvas.height = CH;
+const tctx = terrainCanvas.getContext("2d");
+
+const STARS = Array.from({ length: 40 }, () => ({ x: Math.random() * CW, y: Math.random() * 160 }));
+
+let terrain = null;
+let worms = [];
+let projectiles = [];
+let explosions = [];
+
+const state = {
+  screen: "MENU",
+  turn: "player",
+  wind: 0,
+  activeIndex: { player: 0, ai: 0 },
+  playerWeapon: "bazooka",
+  aiWeapon: "bazooka",
+  aiPauseTimer: 0,
+  playerWon: false,
+};
+
+const keysDown = new Set();
+
+// ===== TERRAIN =====
+
+function generateTerrain() {
+  const mask = new Uint8Array(CW * CH);
+  const baseline = 380 + (Math.random() * 40 - 20);
+  const freq1 = 0.006 + Math.random() * 0.004, amp1 = 35 + Math.random() * 15;
+  const freq2 = 0.02 + Math.random() * 0.01, phase2 = Math.random() * Math.PI * 2, amp2 = 15 + Math.random() * 10;
+  const rough = new Float32Array(CW);
+  for (let x = 0; x < CW; x++) {
+    rough[x] = baseline + Math.sin(x * freq1) * amp1 + Math.sin(x * freq2 + phase2) * amp2;
+  }
+  const STEP = 3, MAXDELTA = 7;
+  let prev = null;
+  const h = new Float32Array(CW);
+  for (let x = 0; x < CW; x++) {
+    let v = Math.round(rough[x] / STEP) * STEP;
+    if (prev !== null) {
+      if (v - prev > MAXDELTA) v = prev + MAXDELTA;
+      if (prev - v > MAXDELTA) v = prev - MAXDELTA;
+    }
+    h[x] = v;
+    prev = v;
+  }
+  for (let x = 0; x < CW; x++) {
+    const top = clamp(Math.round(h[x]), 0, CH - 1);
+    for (let y = top; y < CH; y++) mask[y * CW + x] = 1;
+  }
+  return { mask, heights: new Float32Array(CW) };
+}
+
+function drawDirtBand(x, y0, y1) {
+  const mid = 430;
+  if (y1 <= mid) {
+    tctx.fillStyle = COLORS.dirt1;
+    tctx.fillRect(x, y0, 1, y1 - y0);
+  } else if (y0 >= mid) {
+    tctx.fillStyle = COLORS.dirt2;
+    tctx.fillRect(x, y0, 1, y1 - y0);
+  } else {
+    tctx.fillStyle = COLORS.dirt1;
+    tctx.fillRect(x, y0, 1, mid - y0);
+    tctx.fillStyle = COLORS.dirt2;
+    tctx.fillRect(x, mid, 1, y1 - mid);
+  }
+}
+
+function drawColumnRun(x, y0, y1, isTopRun) {
+  if (isTopRun) {
+    const capH = Math.min(3, y1 - y0);
+    tctx.fillStyle = COLORS.grass;
+    tctx.fillRect(x, y0, 1, capH);
+    if (y0 + capH < y1) drawDirtBand(x, y0 + capH, y1);
+  } else {
+    drawDirtBand(x, y0, y1);
+  }
+}
+
+function redrawTerrainColumns(xStart, xEnd) {
+  xStart = Math.max(0, xStart);
+  xEnd = Math.min(CW - 1, xEnd);
+  const w = xEnd - xStart + 1;
+  if (w <= 0) return;
+  tctx.clearRect(xStart, 0, w, CH);
+  for (let x = xStart; x <= xEnd; x++) {
+    let y = 0;
+    let firstSolidY = -1;
+    while (y < CH) {
+      if (terrain.mask[y * CW + x]) {
+        if (firstSolidY === -1) firstSolidY = y;
+        const runStart = y;
+        while (y < CH && terrain.mask[y * CW + x]) y++;
+        drawColumnRun(x, runStart, y, runStart === firstSolidY);
+      } else {
+        y++;
+      }
+    }
+    terrain.heights[x] = firstSolidY === -1 ? CH : firstSolidY;
+  }
+}
+
+function digCrater(cx, cy, radius) {
+  const GRID = 3;
+  const spots = [{ x: cx, y: cy, r: radius }];
+  for (let i = 0; i < 5; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const rr = radius * (0.55 + Math.random() * 0.35);
+    spots.push({ x: cx + Math.cos(ang) * radius * 0.75, y: cy + Math.sin(ang) * radius * 0.75, r: rr });
+  }
+  let minX = CW, maxX = 0, minY = CH, maxY = 0;
+  for (const s of spots) {
+    minX = Math.min(minX, s.x - s.r); maxX = Math.max(maxX, s.x + s.r);
+    minY = Math.min(minY, s.y - s.r); maxY = Math.max(maxY, s.y + s.r);
+  }
+  const x0 = Math.max(0, Math.floor(minX / GRID) * GRID);
+  const x1 = Math.min(CW - 1, Math.ceil(maxX / GRID) * GRID);
+  const y0 = Math.max(0, Math.floor(minY / GRID) * GRID);
+  const y1 = Math.min(CH - 1, Math.ceil(maxY / GRID) * GRID);
+  for (let by = y0; by <= y1; by += GRID) {
+    for (let bx = x0; bx <= x1; bx += GRID) {
+      const px = bx + GRID / 2, py = by + GRID / 2;
+      let inside = false;
+      for (const s of spots) {
+        const dx = px - s.x, dy = py - s.y;
+        if (dx * dx + dy * dy <= s.r * s.r) { inside = true; break; }
+      }
+      if (inside) {
+        for (let yy = by; yy < by + GRID && yy < CH; yy++) {
+          const row = yy * CW;
+          for (let xx = bx; xx < bx + GRID && xx < CW; xx++) terrain.mask[row + xx] = 0;
+        }
+      }
+    }
+  }
+  redrawTerrainColumns(x0, x1);
+}
+
+// ===== SPRITES =====
+
+function drawSprite(pattern, x, y, scale, colorMap, flipX) {
+  const rows = pattern.length, cols = pattern[0].length;
+  for (let r = 0; r < rows; r++) {
+    const row = pattern[r];
+    for (let c = 0; c < cols; c++) {
+      const ch = row[c];
+      if (ch === ".") continue;
+      const col = colorMap[ch];
+      if (!col) continue;
+      const cx = flipX ? (cols - 1 - c) : c;
+      ctx.fillStyle = col;
+      ctx.fillRect(Math.round(x + cx * scale), Math.round(y + r * scale), scale, scale);
+    }
+  }
+}
+
+function drawAimLine(worm) {
+  const originX = worm.x;
+  const originY = worm.y - 24;
+  const dx = Math.cos(worm.aimAngle) * worm.facing;
+  const dy = Math.sin(worm.aimAngle);
+  ctx.strokeStyle = COLORS.outline;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(originX, originY);
+  ctx.lineTo(originX + dx * GUN_LEN, originY + dy * GUN_LEN);
+  ctx.stroke();
+}
+
+function drawHpBar(worm, y) {
+  const bw = 28;
+  const bx = worm.x - bw / 2;
+  ctx.fillStyle = COLORS.hpBg;
+  ctx.fillRect(bx, y, bw, 5);
+  ctx.fillStyle = worm.hp > 50 ? COLORS.hpGreen : COLORS.hpRed;
+  ctx.fillRect(bx, y, bw * (worm.hp / worm.maxHp), 5);
+  ctx.strokeStyle = COLORS.outline;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(bx + 0.5, y + 0.5, bw - 1, 5 - 1);
+}
+
+function isActiveShooter(worm) {
+  if (state.screen !== "PLAYER_TURN" && state.screen !== "AI_TURN" && state.screen !== "AI_CHARGING") return false;
+  return worm === getActiveWorm(state.turn);
+}
+
+function drawWorm(worm) {
+  let pattern = WORM_IDLE;
+  if (worm.animState === "walk") pattern = (Math.floor(worm.animTimer * 8) % 2 === 0) ? WORM_WALK0 : WORM_WALK1;
+  const scale = 4;
+  const spriteW = pattern[0].length * scale;
+  const spriteH = pattern.length * scale;
+  const flip = worm.facing < 0;
+  const colorMap = worm.team === "player" ? PLAYER_COLORS : AI_COLORS;
+  drawSprite(pattern, worm.x - spriteW / 2, worm.y - spriteH, scale, colorMap, flip);
+  if (isActiveShooter(worm)) drawAimLine(worm);
+  drawHpBar(worm, worm.y - spriteH - 10);
+}
+
+function drawProjectile(p) {
+  ctx.fillStyle = COLORS.outline;
+  ctx.fillRect(p.x - 3, p.y - 3, 6, 6);
+  ctx.fillStyle = p.type === "bazooka" ? COLORS.bazooka : COLORS.grenade;
+  ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+  if (p.type === "grenade" && Math.floor(p.fuse * 8) % 2 === 0) {
+    ctx.fillStyle = COLORS.fuse;
+    ctx.fillRect(p.x - 1, p.y - 6, 2, 2);
+  }
+}
+
+function spawnExplosionEffect(x, y, radius) {
+  explosions.push({ x, y, radius, timer: 0.4, duration: 0.4 });
+}
+
+function updateExplosionEffects(dt) {
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    explosions[i].timer -= dt;
+    if (explosions[i].timer <= 0) explosions.splice(i, 1);
+  }
+}
+
+function drawExplosions() {
+  for (const e of explosions) {
+    const t = 1 - e.timer / e.duration;
+    const r = Math.max(2, e.radius * (0.3 + 0.9 * Math.min(t * 1.6, 1)) * (1 - t * 0.35));
+    ctx.fillStyle = t < 0.5 ? COLORS.fire1 : COLORS.fire2;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawSky() {
+  ctx.fillStyle = COLORS.sky1;
+  ctx.fillRect(0, 0, CW, CH);
+  ctx.fillStyle = COLORS.sky2;
+  ctx.fillRect(0, 140, CW, CH - 140);
+  ctx.fillStyle = COLORS.white;
+  for (const s of STARS) ctx.fillRect(Math.round(s.x), Math.round(s.y), 2, 2);
+}
+
+// ===== WORMS / ENTITIES =====
+
+function makeWorm(team, idx, x) {
+  const groundY = terrain.heights[clamp(Math.round(x), 0, CW - 1)];
+  return {
+    team, idx, x, y: groundY, vy: 0,
+    hp: 100, maxHp: 100, alive: true,
+    facing: team === "player" ? 1 : -1,
+    aimAngle: -30 * Math.PI / 180,
+    power: 0, charging: false, targetPower: 0,
+    state: "idle", animState: "idle", animTimer: 0,
+  };
+}
+
+function teamWorms(team) { return worms.filter(w => w.team === team); }
+
+function getActiveWorm(team) { return teamWorms(team)[state.activeIndex[team]]; }
+
+function ensureActiveWormAlive(team) {
+  const arr = teamWorms(team);
+  if (!arr[state.activeIndex[team]].alive) {
+    const idx = arr.findIndex(w => w.alive);
+    if (idx >= 0) state.activeIndex[team] = idx;
+  }
+}
+
+function applyDamage(worm, dmg) {
+  worm.hp = Math.max(0, worm.hp - dmg);
+  if (worm.hp <= 0 && worm.alive) worm.alive = false;
+}
+
+function updateWormPhysics(worm, dt) {
+  if (!worm.alive) return;
+  const gx = clamp(Math.round(worm.x), 0, CW - 1);
+  const groundY = terrain.heights[gx];
+  if (worm.state === "falling") {
+    worm.vy += GRAVITY * dt;
+    worm.y += worm.vy * dt;
+    if (worm.y >= groundY) {
+      const impact = worm.vy;
+      worm.y = groundY;
+      worm.vy = 0;
+      worm.state = "idle";
+      worm.animState = "idle";
+      if (impact > FALL_DAMAGE_THRESHOLD) {
+        applyDamage(worm, Math.round((impact - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_SCALE));
+      }
+    }
+  } else {
+    if (worm.y < groundY - 2) { worm.state = "falling"; worm.vy = 0; }
+    else worm.y = groundY;
+  }
+}
+
+function tryMove(worm, dir, dt) {
+  const nx = clamp(worm.x + dir * WALK_SPEED * dt, 10, CW - 10);
+  const curCol = clamp(Math.round(worm.x), 0, CW - 1);
+  const nextCol = clamp(Math.round(nx), 0, CW - 1);
+  const curH = terrain.heights[curCol];
+  const nextH = terrain.heights[nextCol];
+  if (curH - nextH > MAX_CLIMB) return;
+  worm.x = nx;
+  worm.facing = dir;
+  if (nextH - curH > FALL_TRIGGER) { worm.state = "falling"; worm.vy = 0; }
+  else worm.y = nextH;
+}
+
+function findWormNear(x, y, r) {
+  for (const w of worms) {
+    if (!w.alive) continue;
+    const wy = w.y - 14;
+    if (Math.hypot(w.x - x, wy - y) < r) return w;
+  }
+  return null;
+}
+
+function explode(x, y, radius, damage) {
+  spawnExplosionEffect(x, y, radius);
+  digCrater(x, y, radius);
+  for (const w of worms) {
+    if (!w.alive) continue;
+    const wy = w.y - 14;
+    const d = Math.hypot(w.x - x, wy - y);
+    if (d < radius) {
+      const dmg = Math.round(damage * (1 - d / radius));
+      applyDamage(w, Math.max(dmg, 1));
+      const ang = Math.atan2(wy - y, w.x - x);
+      w.vy = -80 - 60 * (1 - d / radius);
+      w.x = clamp(w.x + Math.cos(ang) * 10, 10, CW - 10);
+      w.state = "falling";
+    }
+  }
+  state.screen = "EXPLOSION";
+}
+
+// ===== PROJECTILES =====
+
+function spawnProjectile(worm, type, power) {
+  const cfg = WEAPONS[type];
+  const speed = cfg.minSpeed + power * (cfg.maxSpeed - cfg.minSpeed);
+  const angle = worm.aimAngle;
+  const dirX = Math.cos(angle) * worm.facing;
+  const dirY = Math.sin(angle);
+  const originX = worm.x + dirX * GUN_LEN;
+  const originY = (worm.y - 24) + dirY * GUN_LEN;
+  projectiles.push({
+    type, x: originX, y: originY,
+    vx: dirX * speed, vy: dirY * speed,
+    ownerTeam: worm.team, bounces: 0, fuse: cfg.fuse || 0,
+  });
+  state.screen = "PROJECTILE";
+}
+
+function handleTerrainHit(p, x, y) {
+  if (p.type === "grenade" && p.bounces < 1) {
+    p.bounces++;
+    p.x = x;
+    p.y = y - 3;
+    p.vy *= -0.45;
+    p.vx *= 0.7;
+    return false;
+  }
+  const cfg = WEAPONS[p.type];
+  explode(x, y, cfg.radius, cfg.damage);
+  return true;
+}
+
+function updateProjectiles(dt) {
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    if (p.type === "grenade") {
+      p.fuse -= dt;
+      if (p.fuse <= 0) {
+        const cfg = WEAPONS.grenade;
+        explode(p.x, p.y, cfg.radius, cfg.damage);
+        projectiles.splice(i, 1);
+        continue;
+      }
+    }
+    p.vx += state.wind * WIND_STRENGTH * dt;
+    p.vy += GRAVITY * dt;
+    const steps = 4;
+    let exploded = false;
+    let outOfBounds = false;
+    for (let s = 0; s < steps; s++) {
+      const sdt = dt / steps;
+      const nx = p.x + p.vx * sdt;
+      const ny = p.y + p.vy * sdt;
+      if (ny >= CH) {
+        const cfg = WEAPONS[p.type];
+        explode(clamp(nx, 0, CW - 1), CH - 1, cfg.radius, cfg.damage);
+        exploded = true;
+        break;
+      }
+      if (nx >= 0 && nx < CW && ny >= 0 && ny < CH && terrain.mask[Math.floor(ny) * CW + Math.floor(nx)]) {
+        exploded = handleTerrainHit(p, nx, ny);
+        break;
+      }
+      const hitWorm = findWormNear(nx, ny, WORM_HIT_RADIUS);
+      if (hitWorm) {
+        const cfg = WEAPONS[p.type];
+        explode(nx, ny, cfg.radius, cfg.damage);
+        exploded = true;
+        break;
+      }
+      p.x = nx;
+      p.y = ny;
+      if (p.x < -150 || p.x > CW + 150 || p.y > CH + 300) { outOfBounds = true; break; }
+    }
+    if (exploded) { projectiles.splice(i, 1); continue; }
+    if (outOfBounds) { projectiles.splice(i, 1); state.screen = "EXPLOSION"; }
+  }
+}
+
+// ===== TURN / STATE MACHINE =====
+
+function allWormsGrounded() {
+  return worms.every(w => !w.alive || w.state !== "falling");
+}
+
+function updateExplosionState() {
+  if (explosions.length === 0 && projectiles.length === 0 && allWormsGrounded()) resolveAfterExplosion();
+}
+
+function resolveAfterExplosion() {
+  const playerAlive = teamWorms("player").some(w => w.alive);
+  const aiAlive = teamWorms("ai").some(w => w.alive);
+  if (!playerAlive || !aiAlive) {
+    state.screen = "GAME_OVER";
+    state.playerWon = playerAlive;
+    return;
+  }
+  state.turn = state.turn === "player" ? "ai" : "player";
+  ensureActiveWormAlive(state.turn);
+  if (state.turn === "player") {
+    state.wind = Math.random() * 2 - 1;
+    state.screen = "PLAYER_TURN";
+  } else {
+    state.aiPauseTimer = 0.9;
+    state.screen = "AI_TURN";
+  }
+}
+
+function selectWeapon(type) {
+  if (state.screen === "PLAYER_TURN") state.playerWeapon = type;
+}
+
+function updatePlayerTurn(dt) {
+  const worm = getActiveWorm("player");
+  if (!worm || !worm.alive || worm.state === "falling") return;
+  let moving = false;
+  if (keysDown.has("ArrowLeft")) { tryMove(worm, -1, dt); moving = true; }
+  if (keysDown.has("ArrowRight")) { tryMove(worm, 1, dt); moving = true; }
+  if (keysDown.has("ArrowUp")) worm.aimAngle = clamp(worm.aimAngle - AIM_SPEED * dt, -MAX_AIM, MAX_AIM);
+  if (keysDown.has("ArrowDown")) worm.aimAngle = clamp(worm.aimAngle + AIM_SPEED * dt, -MAX_AIM, MAX_AIM);
+  worm.animState = moving ? "walk" : "idle";
+  if (moving) worm.animTimer += dt;
+  if (worm.charging) worm.power = clamp(worm.power + dt / CHARGE_TIME, 0, 1);
+}
+
+function handleSpaceDown() {
+  if (state.screen !== "PLAYER_TURN") return;
+  const worm = getActiveWorm("player");
+  if (!worm || !worm.alive || worm.state === "falling") return;
+  worm.charging = true;
+  worm.power = 0;
+}
+
+function handleSpaceRelease() {
+  if (state.screen !== "PLAYER_TURN") return;
+  const worm = getActiveWorm("player");
+  if (!worm || !worm.alive || !worm.charging) return;
+  worm.charging = false;
+  const power = Math.max(worm.power, 0.12);
+  spawnProjectile(worm, state.playerWeapon, power);
+  worm.power = 0;
+}
+
+function pickPlayerTarget(aiWorm) {
+  const alive = teamWorms("player").filter(w => w.alive);
+  if (Math.random() < 0.3) return alive[Math.floor(Math.random() * alive.length)];
+  return alive.reduce((best, w) => (Math.abs(w.x - aiWorm.x) < Math.abs(best.x - aiWorm.x) ? w : best));
+}
+
+function updateAiTurnPause(dt) {
+  state.aiPauseTimer -= dt;
+  if (state.aiPauseTimer <= 0) {
+    prepareAiShot();
+    state.screen = "AI_CHARGING";
+  }
+}
+
+function prepareAiShot() {
+  const worm = getActiveWorm("ai");
+  const target = pickPlayerTarget(worm);
+  const dx = target.x - worm.x;
+  worm.facing = dx >= 0 ? 1 : -1;
+  const dist = Math.abs(dx);
+  state.aiWeapon = Math.random() < 0.7 ? "bazooka" : "grenade";
+  let angle = -50 * Math.PI / 180;
+  let power = clamp(0.35 + dist / 900, 0.25, 1);
+  angle += (Math.random() * 2 - 1) * (10 * Math.PI / 180);
+  power += (Math.random() * 2 - 1) * 0.08;
+  power = clamp(power, 0.2, 1);
+  worm.aimAngle = clamp(angle, -MAX_AIM, MAX_AIM);
+  worm.targetPower = power;
+  worm.power = 0;
+  worm.charging = true;
+}
+
+function updateAiCharging(dt) {
+  const worm = getActiveWorm("ai");
+  worm.power = Math.min(worm.targetPower, worm.power + dt / (CHARGE_TIME * 0.6));
+  if (worm.power >= worm.targetPower - 0.001) {
+    worm.charging = false;
+    spawnProjectile(worm, state.aiWeapon, worm.power);
+    worm.power = 0;
+  }
+}
+
+// ===== MATCH LIFECYCLE =====
+
+function startMatch() {
+  terrain = generateTerrain();
+  redrawTerrainColumns(0, CW - 1);
+  worms = [
+    makeWorm("player", 0, CW * 0.18),
+    makeWorm("player", 1, CW * 0.30),
+    makeWorm("ai", 0, CW * 0.70),
+    makeWorm("ai", 1, CW * 0.82),
+  ];
+  projectiles = [];
+  explosions = [];
+  state.turn = "player";
+  state.activeIndex = { player: 0, ai: 0 };
+  state.wind = Math.random() * 2 - 1;
+  state.playerWeapon = "bazooka";
+  state.screen = "PLAYER_TURN";
+}
+
+function handleEnter() {
+  if (state.screen === "MENU" || state.screen === "GAME_OVER") startMatch();
+}
+
+// ===== HUD =====
+
+function drawHUD() {
+  if (state.screen === "MENU" || state.screen === "GAME_OVER") return;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.font = "bold 16px monospace";
+  ctx.fillStyle = COLORS.white;
+  ctx.fillText(state.turn === "player" ? "ВАШ ХОД" : "ХОД ПРОТИВНИКА", 14, 10);
+  const windArrow = state.wind > 0.05 ? "→" : (state.wind < -0.05 ? "←" : "-");
+  ctx.fillText("ВЕТЕР " + windArrow + " " + Math.abs(Math.round(state.wind * 10)), 340, 10);
+  const weaponName = state.turn === "player" ? state.playerWeapon : state.aiWeapon;
+  ctx.fillText(weaponName === "bazooka" ? "БАЗУКА [1]" : "ГРАНАТА [2]", 620, 10);
+  const shooter = getActiveWorm(state.turn);
+  if (shooter && shooter.charging) {
+    const bw = 220, bh = 14, bx = (CW - bw) / 2, by = CH - 32;
+    ctx.fillStyle = COLORS.hpBg;
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = COLORS.fire1;
+    ctx.fillRect(bx, by, bw * shooter.power, bh);
+    ctx.strokeStyle = COLORS.outline;
+    ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+  }
+}
+
+function drawMenu() {
+  ctx.fillStyle = "rgba(10,10,20,0.82)";
+  ctx.fillRect(0, 0, CW, CH);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = COLORS.white;
+  ctx.font = "bold 42px monospace";
+  ctx.fillText("ДУЭЛЬ ЧЕРВЯКОВ", CW / 2, 150);
+  ctx.font = "16px monospace";
+  ctx.fillText("8-БИТНАЯ АРТИЛЛЕРИЙСКАЯ ДУЭЛЬ", CW / 2, 200);
+  ctx.font = "bold 20px monospace";
+  ctx.fillStyle = COLORS.fire1;
+  ctx.fillText("ENTER — НАЧАТЬ БОЙ", CW / 2, 280);
+  ctx.font = "15px monospace";
+  ctx.fillStyle = COLORS.white;
+  const lines = [
+    "← → — ДВИЖЕНИЕ",
+    "↑ ↓ — УГОЛ ПРИЦЕЛА",
+    "SPACE (ДЕРЖАТЬ / ОТПУСТИТЬ) — СИЛА И ВЫСТРЕЛ",
+    "1 — БАЗУКА     2 — ГРАНАТА",
+  ];
+  lines.forEach((line, i) => ctx.fillText(line, CW / 2, 350 + i * 28));
+  ctx.textAlign = "left";
+}
+
+function drawGameOver() {
+  ctx.fillStyle = "rgba(10,10,20,0.82)";
+  ctx.fillRect(0, 0, CW, CH);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = state.playerWon ? COLORS.hpGreen : COLORS.hpRed;
+  ctx.font = "bold 44px monospace";
+  ctx.fillText(state.playerWon ? "ПОБЕДА!" : "ПОРАЖЕНИЕ", CW / 2, 250);
+  ctx.fillStyle = COLORS.white;
+  ctx.font = "bold 20px monospace";
+  ctx.fillText("ENTER — ЕЩЁ РАЗ", CW / 2, 320);
+  ctx.textAlign = "left";
+}
+
+// ===== INPUT =====
+
+const BLOCKED_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space"]);
+
+window.addEventListener("keydown", (e) => {
+  if (BLOCKED_KEYS.has(e.code)) e.preventDefault();
+  if (e.code === "Enter") handleEnter();
+  if (e.code === "Space" && !e.repeat) handleSpaceDown();
+  if (!e.repeat) {
+    if (e.code === "Digit1") selectWeapon("bazooka");
+    if (e.code === "Digit2") selectWeapon("grenade");
+  }
+  keysDown.add(e.code);
+});
+
+window.addEventListener("keyup", (e) => {
+  if (BLOCKED_KEYS.has(e.code)) e.preventDefault();
+  keysDown.delete(e.code);
+  if (e.code === "Space") handleSpaceRelease();
+});
+
+window.addEventListener("blur", () => keysDown.clear());
+
+// ===== MAIN LOOP =====
+
+function update(dt) {
+  if (state.screen === "MENU") { updateExplosionEffects(dt); return; }
+  for (const w of worms) updateWormPhysics(w, dt);
+  switch (state.screen) {
+    case "PLAYER_TURN": updatePlayerTurn(dt); break;
+    case "PROJECTILE": updateProjectiles(dt); break;
+    case "EXPLOSION": updateExplosionState(); break;
+    case "AI_TURN": updateAiTurnPause(dt); break;
+    case "AI_CHARGING": updateAiCharging(dt); break;
+  }
+  updateExplosionEffects(dt);
+}
+
+function render() {
+  drawSky();
+  ctx.drawImage(terrainCanvas, 0, 0);
+  if (state.screen !== "MENU") {
+    for (const w of worms) if (w.alive) drawWorm(w);
+    for (const p of projectiles) drawProjectile(p);
+  }
+  drawExplosions();
+  drawHUD();
+  if (state.screen === "MENU") drawMenu();
+  if (state.screen === "GAME_OVER") drawGameOver();
+}
+
+let lastTime = 0;
+function loop(ts) {
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame((t) => { lastTime = t; requestAnimationFrame(loop); });
+</script>
+</body>
+</html>
