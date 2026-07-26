@@ -173,7 +173,8 @@
 <script>
 "use strict";
 
-const CW = 900, CH = 600;
+const VW = 900, VH = 600;
+const WW = 1260, WH = 600;
 
 const COLORS = {
   sky1: "#141428",
@@ -220,7 +221,7 @@ const TURN_TIME_LIMIT = 45;
 const RETREAT_TIME = 5;
 const MATCH_TIME_LIMIT = 240;
 const WATER_RISE_SPEED = 15;
-const WATER_BASE_LEVEL = CH - 40;
+const WATER_BASE_LEVEL = WH - 40;
 
 const WEAPONS = {
   bazooka: { minSpeed: 260, maxSpeed: 620, radius: 34, damage: 34 },
@@ -302,16 +303,283 @@ const ACCESSORY_PATTERNS = [ACC_CAP, ACC_BANDANA, ACC_SHADES, ACC_MOHAWK];
 const ACCESSORY_COLORS = ["#3a6fd8", "#d8903a", "#232a30", "#ff5fb0"];
 const ACCESSORY_NAMES = ["в кепке", "в бандане", "в очках", "с ирокезом"];
 
+const DECO_TYPES_INFO = {
+  rock: { color: "#8c8c86", kind: "dome", footprint: 20, peak: 30 },
+  bush: { color: "#2f8f4a", kind: "dome", footprint: 17, peak: 20 },
+  cactus: { color: "#256b38", kind: "cactus", footprint: 19, peak: 62 },
+};
+const DECO_COUNT_MIN = 6;
+const DECO_COUNT_MAX = 9;
+const DECO_MARGIN = 40;
+
+function decoBumpAt(info, dx) {
+  const adx = Math.abs(dx);
+  if (info.kind === "dome") {
+    if (adx > info.footprint) return 0;
+    return info.peak * Math.sqrt(Math.max(0, 1 - (adx * adx) / (info.footprint * info.footprint)));
+  }
+  if (info.kind === "cactus") {
+    if (adx <= 7) return info.peak;
+    if (adx <= 9) return info.peak * 0.75;
+    if (adx <= info.footprint) return info.peak * 0.48;
+    return 0;
+  }
+  return 0;
+}
+
+function placeAndStampDecorations(h, decoColor, decoBaseY) {
+  const types = Object.keys(DECO_TYPES_INFO);
+  const count = DECO_COUNT_MIN + Math.floor(Math.random() * (DECO_COUNT_MAX - DECO_COUNT_MIN + 1));
+  const placed = [];
+  let attempts = 0;
+  while (placed.length < count && attempts < 400) {
+    attempts++;
+    const type = types[Math.floor(Math.random() * types.length)];
+    const info = DECO_TYPES_INFO[type];
+    const cx = Math.round(DECO_MARGIN + Math.random() * (WW - DECO_MARGIN * 2));
+    const lo = cx - info.footprint, hi = cx + info.footprint;
+    if (lo < 0 || hi >= WW) continue;
+    let ok = true;
+    for (let x = lo; x <= hi; x++) { if (h[x] >= WATER_BASE_LEVEL - 2) { ok = false; break; } }
+    if (!ok) continue;
+    if (placed.some(p => Math.abs(p.cx - cx) < p.footprint + info.footprint + 20)) continue;
+    placed.push({ cx, footprint: info.footprint });
+    for (let x = lo; x <= hi; x++) {
+      const bump = decoBumpAt(info, x - cx);
+      if (bump <= 0) continue;
+      decoBaseY[x] = h[x];
+      h[x] = Math.max(0, h[x] - bump);
+      decoColor[x] = info.color;
+    }
+  }
+}
+
+function isDecoratedAt(x) {
+  const col = clamp(Math.round(x), 0, WW - 1);
+  return !!terrain.decoColor[col];
+}
+
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 ctx.imageSmoothingEnabled = false;
 
 const terrainCanvas = document.createElement("canvas");
-terrainCanvas.width = CW;
-terrainCanvas.height = CH;
+terrainCanvas.width = WW;
+terrainCanvas.height = WH;
 const tctx = terrainCanvas.getContext("2d");
 
-const STARS = Array.from({ length: 40 }, () => ({ x: Math.random() * CW, y: Math.random() * 160 }));
+// ===== AUDIO (procedural 8-bit, no external files) =====
+
+let audioCtx = null;
+let masterGain = null;
+let musicGain = null;
+let noiseBuffer = null;
+
+function ensureAudio() {
+  if (audioCtx) {
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    return;
+  }
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  if (!Ctor) return;
+  audioCtx = new Ctor();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = state.muted ? 0 : 0.5;
+  masterGain.connect(audioCtx.destination);
+  musicGain = audioCtx.createGain();
+  musicGain.gain.value = 0.5;
+  musicGain.connect(masterGain);
+}
+
+function setMuted(muted) {
+  state.muted = muted;
+  if (masterGain) masterGain.gain.value = muted ? 0 : 0.5;
+}
+
+function toggleMute() {
+  ensureAudio();
+  setMuted(!state.muted);
+  playUiBlip();
+}
+
+function getNoiseBuffer() {
+  if (noiseBuffer) return noiseBuffer;
+  const len = Math.floor(audioCtx.sampleRate * 1.0);
+  noiseBuffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  return noiseBuffer;
+}
+
+function playBlip(opts) {
+  if (!audioCtx || state.muted) return;
+  const freq = opts.freq || 440;
+  const duration = opts.duration || 0.12;
+  const type = opts.type || "square";
+  const volume = opts.volume || 0.25;
+  const freqEnd = opts.freqEnd;
+  const t0 = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  osc.type = type;
+  osc.frequency.setValueAtTime(Math.max(freq, 1), t0);
+  if (freqEnd !== undefined) osc.frequency.exponentialRampToValueAtTime(Math.max(freqEnd, 1), t0 + duration);
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(volume, t0 + Math.min(0.01, duration * 0.2));
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+  osc.connect(gain).connect(masterGain);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.02);
+}
+
+function playNoiseBurst(opts) {
+  if (!audioCtx || state.muted) return;
+  const duration = opts.duration || 0.4;
+  const volume = opts.volume || 0.4;
+  const startFreq = opts.startFreq || 1800;
+  const endFreq = opts.endFreq || 80;
+  const t0 = audioCtx.currentTime;
+  const src = audioCtx.createBufferSource();
+  src.buffer = getNoiseBuffer();
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.setValueAtTime(startFreq, t0);
+  filter.frequency.exponentialRampToValueAtTime(Math.max(endFreq, 20), t0 + duration);
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(volume, t0);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+  src.connect(filter).connect(gain).connect(masterGain);
+  src.start(t0);
+  src.stop(t0 + duration + 0.02);
+}
+
+function playShootSound(type) {
+  ensureAudio();
+  if (type === "bazooka") {
+    playBlip({ freq: 180, freqEnd: 70, duration: 0.16, type: "square", volume: 0.28 });
+  } else {
+    playBlip({ freq: 320, freqEnd: 200, duration: 0.12, type: "triangle", volume: 0.22 });
+  }
+}
+
+function playExplosionSound(radius) {
+  ensureAudio();
+  const size = clamp(radius / 40, 0.5, 1.8);
+  playNoiseBurst({ duration: 0.45 * size, volume: 0.45, startFreq: 2200 * size, endFreq: 60 });
+  playBlip({ freq: 95, freqEnd: 35, duration: 0.32 * size, type: "sine", volume: 0.4 });
+}
+
+function playJumpSound() {
+  ensureAudio();
+  playBlip({ freq: 260, freqEnd: 520, duration: 0.14, type: "square", volume: 0.2 });
+}
+
+function playHitSound() {
+  ensureAudio();
+  playBlip({ freq: 520, freqEnd: 180, duration: 0.1, type: "square", volume: 0.22 });
+}
+
+function playHitVoiceSound() {
+  ensureAudio();
+  if (!audioCtx || state.muted) return;
+  const t0 = audioCtx.currentTime;
+  const variant = Math.floor(Math.random() * 3);
+  const osc = audioCtx.createOscillator();
+  osc.type = "square";
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.frequency.value = 900;
+  filter.Q.value = 4;
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(0.45, t0 + 0.01);
+  let stopAt;
+  if (variant === 0) {
+    const base = 260 + Math.random() * 60;
+    osc.frequency.setValueAtTime(base, t0);
+    osc.frequency.linearRampToValueAtTime(base * 1.8, t0 + 0.05);
+    osc.frequency.linearRampToValueAtTime(base * 1.1, t0 + 0.09);
+    osc.frequency.linearRampToValueAtTime(base * 1.6, t0 + 0.13);
+    osc.frequency.linearRampToValueAtTime(base * 0.6, t0 + 0.22);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.24);
+    stopAt = 0.26;
+  } else if (variant === 1) {
+    const base = 480 + Math.random() * 80;
+    osc.frequency.setValueAtTime(base, t0);
+    osc.frequency.exponentialRampToValueAtTime(base * 0.35, t0 + 0.16);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
+    stopAt = 0.2;
+  } else {
+    const base = 340 + Math.random() * 60;
+    osc.frequency.setValueAtTime(base, t0);
+    osc.frequency.setValueAtTime(base * 1.5, t0 + 0.05);
+    osc.frequency.setValueAtTime(base * 0.8, t0 + 0.09);
+    osc.frequency.setValueAtTime(base * 1.3, t0 + 0.13);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.17);
+    stopAt = 0.19;
+  }
+  osc.connect(filter).connect(gain).connect(masterGain);
+  osc.start(t0);
+  osc.stop(t0 + stopAt);
+}
+
+function playPickupSound() {
+  ensureAudio();
+  playBlip({ freq: 440, freqEnd: 880, duration: 0.09, type: "square", volume: 0.22 });
+  setTimeout(() => playBlip({ freq: 660, freqEnd: 1100, duration: 0.12, type: "square", volume: 0.22 }), 70);
+}
+
+function playMineAlarmSound() {
+  ensureAudio();
+  playBlip({ freq: 900, duration: 0.08, type: "square", volume: 0.25 });
+  setTimeout(() => playBlip({ freq: 900, duration: 0.08, type: "square", volume: 0.25 }), 110);
+}
+
+function playTurnChimeSound() {
+  ensureAudio();
+  playBlip({ freq: 523, duration: 0.08, type: "triangle", volume: 0.16 });
+}
+
+function playUiBlip() {
+  ensureAudio();
+  playBlip({ freq: 700, duration: 0.06, type: "square", volume: 0.18 });
+}
+
+function playVictorySound() {
+  ensureAudio();
+  [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => playBlip({ freq: f, duration: 0.18, type: "square", volume: 0.28 }), i * 110));
+}
+
+function playDefeatSound() {
+  ensureAudio();
+  [392, 330, 262, 220].forEach((f, i) => setTimeout(() => playBlip({ freq: f, duration: 0.22, type: "sawtooth", volume: 0.24 }), i * 140));
+}
+
+const MUSIC_NOTES = [220, 220, 261.63, 220, 196, 220, 261.63, 293.66];
+const MUSIC_STEP_TIME = 0.24;
+let musicTimer = 0;
+let musicIndex = 0;
+
+function updateMusic(dt) {
+  if (!audioCtx || state.muted || state.screen === "GAME_OVER") return;
+  musicTimer += dt;
+  if (musicTimer < MUSIC_STEP_TIME) return;
+  musicTimer -= MUSIC_STEP_TIME;
+  const t0 = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  osc.type = "square";
+  osc.frequency.setValueAtTime(MUSIC_NOTES[musicIndex % MUSIC_NOTES.length], t0);
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(0.14, t0 + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.2);
+  osc.connect(gain).connect(musicGain);
+  osc.start(t0);
+  osc.stop(t0 + 0.22);
+  musicIndex++;
+}
+
+const STARS = Array.from({ length: 40 }, () => ({ x: Math.random() * VW, y: Math.random() * 160 }));
 
 let terrain = null;
 let worms = [];
@@ -320,7 +588,10 @@ let explosions = [];
 let floaters = [];
 let crates = [];
 let mines = [];
+let barrels = [];
+let fireZones = [];
 let waterTime = 0;
+let camera = { x: Math.max(0, (WW - VW) / 2) };
 
 const state = {
   screen: "MENU",
@@ -341,25 +612,114 @@ const state = {
   suddenDeath: false,
   waterLevel: WATER_BASE_LEVEL,
   banner: null,
+  introTimer: 0,
+  biome: "water",
+  difficulty: "veteran",
+  aiLastErrorPx: null,
+  muted: false,
 };
+
+const DIFFICULTY_PRESETS = {
+  easy: {
+    label: "ИЗИ",
+    angleNoiseDeg: 16,
+    powerNoise: 0.14,
+    killPriorityChance: 0.4,
+    randomTargetChance: 0.35,
+    superClusterThreshold: 3,
+    reactionPause: [1.1, 1.6],
+    correction: 0,
+    finishHpThreshold: 25,
+    weaponSkill: 0.55,
+  },
+  veteran: {
+    label: "БЫВАЛЫЙ",
+    angleNoiseDeg: 5,
+    powerNoise: 0.06,
+    killPriorityChance: 0.78,
+    randomTargetChance: 0.18,
+    superClusterThreshold: 2,
+    reactionPause: [0.7, 1.1],
+    correction: 0.6,
+    finishHpThreshold: 34,
+    weaponSkill: 0.75,
+  },
+  armageddon: {
+    label: "АРМАГЕДОН",
+    angleNoiseDeg: 0.4,
+    powerNoise: 0.004,
+    killPriorityChance: 0.97,
+    randomTargetChance: 0.03,
+    superClusterThreshold: 2,
+    reactionPause: [0.2, 0.3],
+    correction: 1,
+    finishHpThreshold: 45,
+    weaponSkill: 1,
+  },
+};
+
+function aiDifficulty() { return DIFFICULTY_PRESETS[state.difficulty] || DIFFICULTY_PRESETS.veteran; }
 
 const keysDown = new Set();
 
 // ===== TERRAIN =====
 
+const ISLAND_GAP_MARGIN = 180;
+const ISLAND_CORE_MIN_WIDTH = 40;
+const ISLAND_CORE_MAX_WIDTH = 90;
+const ISLAND_TAPER_MIN = 25;
+const ISLAND_TAPER_MAX = 75;
+
+function planIslandGaps() {
+  const roll = Math.random();
+  const numGaps = roll < 0.2 ? 0 : (roll < 0.7 ? 1 : 2);
+  const gaps = [];
+  let attempts = 0;
+  while (gaps.length < numGaps && attempts < 50) {
+    attempts++;
+    const coreWidth = ISLAND_CORE_MIN_WIDTH + Math.random() * (ISLAND_CORE_MAX_WIDTH - ISLAND_CORE_MIN_WIDTH);
+    const taperLeft = ISLAND_TAPER_MIN + Math.random() * (ISLAND_TAPER_MAX - ISLAND_TAPER_MIN);
+    const taperRight = ISLAND_TAPER_MIN + Math.random() * (ISLAND_TAPER_MAX - ISLAND_TAPER_MIN);
+    const cx = ISLAND_GAP_MARGIN + Math.random() * (WW - ISLAND_GAP_MARGIN * 2);
+    const x0 = Math.round(cx - coreWidth / 2), x1 = Math.round(cx + coreWidth / 2);
+    const footprintLo = x0 - taperLeft, footprintHi = x1 + taperRight;
+    const overlaps = gaps.some(g => footprintLo < g.footprintHi + 60 && footprintHi > g.footprintLo - 60);
+    if (overlaps) continue;
+    gaps.push({ x0, x1, taperLeft, taperRight, footprintLo, footprintHi });
+  }
+  return gaps;
+}
+
+function applyIslandDepression(rough, gaps) {
+  const targetDepth = WATER_BASE_LEVEL + 60;
+  for (const g of gaps) {
+    const lo = Math.max(0, Math.floor(g.x0 - g.taperLeft));
+    const hi = Math.min(WW - 1, Math.ceil(g.x1 + g.taperRight));
+    for (let x = lo; x <= hi; x++) {
+      let t;
+      if (x >= g.x0 && x <= g.x1) t = 1;
+      else if (x < g.x0) t = 1 - clamp((g.x0 - x) / g.taperLeft, 0, 1);
+      else t = 1 - clamp((x - g.x1) / g.taperRight, 0, 1);
+      const eased = t * t * (3 - 2 * t);
+      rough[x] = rough[x] + (targetDepth - rough[x]) * eased;
+    }
+  }
+}
+
 function generateTerrain() {
-  const mask = new Uint8Array(CW * CH);
+  const mask = new Uint8Array(WW * WH);
   const baseline = 380 + (Math.random() * 40 - 20);
   const freq1 = 0.006 + Math.random() * 0.004, amp1 = 35 + Math.random() * 15;
   const freq2 = 0.02 + Math.random() * 0.01, phase2 = Math.random() * Math.PI * 2, amp2 = 15 + Math.random() * 10;
-  const rough = new Float32Array(CW);
-  for (let x = 0; x < CW; x++) {
+  const rough = new Float32Array(WW);
+  for (let x = 0; x < WW; x++) {
     rough[x] = baseline + Math.sin(x * freq1) * amp1 + Math.sin(x * freq2 + phase2) * amp2;
   }
+  applyIslandDepression(rough, planIslandGaps());
   const STEP = 3, MAXDELTA = 7;
   let prev = null;
-  const h = new Float32Array(CW);
-  for (let x = 0; x < CW; x++) {
+  const h = new Float32Array(WW);
+  for (let x = 0; x < WW; x++) {
     let v = Math.round(rough[x] / STEP) * STEP;
     if (prev !== null) {
       if (v - prev > MAXDELTA) v = prev + MAXDELTA;
@@ -368,11 +728,20 @@ function generateTerrain() {
     h[x] = v;
     prev = v;
   }
-  for (let x = 0; x < CW; x++) {
+  const decoColor = new Array(WW).fill(null);
+  const decoBaseY = new Array(WW).fill(0);
+  placeAndStampDecorations(h, decoColor, decoBaseY);
+  for (let x = 0; x < WW; x++) {
+    if (h[x] >= WATER_BASE_LEVEL - 2) continue;
     const top = clamp(Math.round(h[x]), 0, WATER_BASE_LEVEL - 1);
-    for (let y = top; y < WATER_BASE_LEVEL; y++) mask[y * CW + x] = 1;
+    for (let y = top; y < WATER_BASE_LEVEL; y++) mask[y * WW + x] = 1;
   }
-  return { mask, heights: new Float32Array(CW) };
+  return { mask, heights: new Float32Array(WW), decoColor, decoBaseY };
+}
+
+function hasGroundAt(x) {
+  const col = clamp(Math.round(x), 0, WW - 1);
+  return terrain.heights[col] < WATER_BASE_LEVEL;
 }
 
 function drawDirtBand(x, y0, y1) {
@@ -393,6 +762,15 @@ function drawDirtBand(x, y0, y1) {
 
 function drawColumnRun(x, y0, y1, isTopRun) {
   if (isTopRun) {
+    const decoColor = terrain.decoColor[x];
+    const decoBase = terrain.decoBaseY[x];
+    if (decoColor && decoBase > y0) {
+      const decoEnd = Math.min(decoBase, y1);
+      tctx.fillStyle = decoColor;
+      tctx.fillRect(x, y0, 1, decoEnd - y0);
+      if (decoEnd < y1) drawColumnRun(x, decoEnd, y1, true);
+      return;
+    }
     const capH = Math.min(3, y1 - y0);
     tctx.fillStyle = COLORS.grass;
     tctx.fillRect(x, y0, 1, capH);
@@ -404,24 +782,24 @@ function drawColumnRun(x, y0, y1, isTopRun) {
 
 function redrawTerrainColumns(xStart, xEnd) {
   xStart = Math.max(0, xStart);
-  xEnd = Math.min(CW - 1, xEnd);
+  xEnd = Math.min(WW - 1, xEnd);
   const w = xEnd - xStart + 1;
   if (w <= 0) return;
-  tctx.clearRect(xStart, 0, w, CH);
+  tctx.clearRect(xStart, 0, w, WH);
   for (let x = xStart; x <= xEnd; x++) {
     let y = 0;
     let firstSolidY = -1;
-    while (y < CH) {
-      if (terrain.mask[y * CW + x]) {
+    while (y < WH) {
+      if (terrain.mask[y * WW + x]) {
         if (firstSolidY === -1) firstSolidY = y;
         const runStart = y;
-        while (y < CH && terrain.mask[y * CW + x]) y++;
+        while (y < WH && terrain.mask[y * WW + x]) y++;
         drawColumnRun(x, runStart, y, runStart === firstSolidY);
       } else {
         y++;
       }
     }
-    terrain.heights[x] = firstSolidY === -1 ? CH : firstSolidY;
+    terrain.heights[x] = firstSolidY === -1 ? WH : firstSolidY;
   }
 }
 
@@ -433,15 +811,15 @@ function digCrater(cx, cy, radius) {
     const rr = radius * (0.55 + Math.random() * 0.35);
     spots.push({ x: cx + Math.cos(ang) * radius * 0.75, y: cy + Math.sin(ang) * radius * 0.75, r: rr });
   }
-  let minX = CW, maxX = 0, minY = CH, maxY = 0;
+  let minX = WW, maxX = 0, minY = WH, maxY = 0;
   for (const s of spots) {
     minX = Math.min(minX, s.x - s.r); maxX = Math.max(maxX, s.x + s.r);
     minY = Math.min(minY, s.y - s.r); maxY = Math.max(maxY, s.y + s.r);
   }
   const x0 = Math.max(0, Math.floor(minX / GRID) * GRID);
-  const x1 = Math.min(CW - 1, Math.ceil(maxX / GRID) * GRID);
+  const x1 = Math.min(WW - 1, Math.ceil(maxX / GRID) * GRID);
   const y0 = Math.max(0, Math.floor(minY / GRID) * GRID);
-  const y1 = Math.min(CH - 1, Math.ceil(maxY / GRID) * GRID);
+  const y1 = Math.min(WH - 1, Math.ceil(maxY / GRID) * GRID);
   for (let by = y0; by <= y1; by += GRID) {
     for (let bx = x0; bx <= x1; bx += GRID) {
       const px = bx + GRID / 2, py = by + GRID / 2;
@@ -451,13 +829,14 @@ function digCrater(cx, cy, radius) {
         if (dx * dx + dy * dy <= s.r * s.r) { inside = true; break; }
       }
       if (inside) {
-        for (let yy = by; yy < by + GRID && yy < CH; yy++) {
-          const row = yy * CW;
-          for (let xx = bx; xx < bx + GRID && xx < CW; xx++) terrain.mask[row + xx] = 0;
+        for (let yy = by; yy < by + GRID && yy < WH; yy++) {
+          const row = yy * WW;
+          for (let xx = bx; xx < bx + GRID && xx < WW; xx++) terrain.mask[row + xx] = 0;
         }
       }
     }
   }
+  for (let x = x0; x <= x1; x++) terrain.decoColor[x] = null;
   redrawTerrainColumns(x0, x1);
 }
 
@@ -485,12 +864,59 @@ function drawAimLine(worm) {
   const facing = (state.screen === "AI_MOVING" && worm.shootFacing !== undefined) ? worm.shootFacing : worm.facing;
   const dx = Math.cos(worm.aimAngle) * facing;
   const dy = Math.sin(worm.aimAngle);
-  ctx.strokeStyle = COLORS.outline;
-  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(240,234,216,0.55)";
+  ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(originX, originY);
-  ctx.lineTo(originX + dx * GUN_LEN, originY + dy * GUN_LEN);
+  ctx.moveTo(originX + dx * 30, originY + dy * 30);
+  ctx.lineTo(originX + dx * 48, originY + dy * 48);
   ctx.stroke();
+}
+
+function drawBazookaShape(hasSuper) {
+  ctx.fillStyle = COLORS.outline;
+  ctx.fillRect(0, -5, 25, 10);
+  ctx.fillStyle = COLORS.bazooka;
+  ctx.fillRect(1, -4, 22, 8);
+  ctx.fillStyle = "#8a8a8a";
+  ctx.fillRect(18, -5, 7, 10);
+  ctx.fillStyle = COLORS.outline;
+  ctx.fillRect(20, -3, 3, 6);
+  ctx.fillStyle = hasSuper ? COLORS.tomato : "#5a2a1a";
+  ctx.fillRect(3, 2, 5, 7);
+}
+
+function drawGrenadeShape(hasSuper) {
+  const bodyColor = hasSuper ? COLORS.tomato : COLORS.grenade;
+  ctx.fillStyle = COLORS.outline;
+  ctx.beginPath();
+  ctx.arc(11, 1, 7, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = bodyColor;
+  ctx.beginPath();
+  ctx.arc(11, 1, 5.5, 0, Math.PI * 2);
+  ctx.fill();
+  if (hasSuper) {
+    ctx.fillStyle = COLORS.tomatoLeaf;
+    ctx.fillRect(9, -6, 4, 3);
+  } else {
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillRect(9, -8, 2, 5);
+    ctx.fillStyle = "#9a9a9a";
+    ctx.fillRect(11, -9, 4, 2);
+  }
+}
+
+function drawWeaponInHand(worm) {
+  const weaponType = worm.team === "player" ? state.playerWeapon : state.aiWeapon;
+  const hasSuper = worm.team === "player" ? state.playerSuperGrenade : state.aiSuperGrenade;
+  const facing = (state.screen === "AI_MOVING" && worm.shootFacing !== undefined) ? worm.shootFacing : worm.facing;
+  const drawAngle = facing > 0 ? worm.aimAngle : Math.PI - worm.aimAngle;
+  ctx.save();
+  ctx.translate(worm.x, worm.y - 24);
+  ctx.rotate(drawAngle);
+  if (weaponType === "grenade") drawGrenadeShape(hasSuper);
+  else drawBazookaShape(hasSuper);
+  ctx.restore();
 }
 
 function drawHpBar(worm, y) {
@@ -536,7 +962,10 @@ function drawWorm(worm) {
   drawSprite(pattern, worm.x - spriteW / 2, worm.y - spriteH, scale, colorMap, flip);
   const accPattern = ACCESSORY_PATTERNS[worm.accessoryIdx];
   drawSprite(accPattern, worm.x - spriteW / 2, worm.y - spriteH, scale, { A: ACCESSORY_COLORS[worm.accessoryIdx] }, flip);
-  if (isActiveShooter(worm)) drawAimLine(worm);
+  if (isActiveShooter(worm)) {
+    drawWeaponInHand(worm);
+    drawAimLine(worm);
+  }
   drawHpBar(worm, worm.y - spriteH - 10);
   drawNameAndHp(worm, worm.y - spriteH - 13);
 }
@@ -635,9 +1064,9 @@ function drawBanner() {
   ctx.textBaseline = "middle";
   ctx.font = "bold 30px monospace";
   ctx.fillStyle = COLORS.outline;
-  ctx.fillText(b.text, CW / 2 + 2, 212);
+  ctx.fillText(b.text, VW / 2 + 2, 212);
   ctx.fillStyle = b.color;
-  ctx.fillText(b.text, CW / 2, 210);
+  ctx.fillText(b.text, VW / 2, 210);
   ctx.globalAlpha = 1;
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
@@ -651,12 +1080,18 @@ function trySpawnCrate() {
   if (crates.length > 0) return;
   if (state.turnCount === 0 || state.turnCount % 3 !== 0) return;
   if (Math.random() >= 0.2) return;
-  const x = 60 + Math.random() * (CW - 120);
+  let x, attempts = 0;
+  do {
+    x = 60 + Math.random() * (WW - 120);
+    attempts++;
+  } while (attempts < 30 && (!hasGroundAt(x) || isDecoratedAt(x)));
+  if (!hasGroundAt(x) || isDecoratedAt(x)) return;
   const kind = Math.random() < 0.5 ? "heal" : "weapon";
   crates.push({ x, y: -20, vy: CRATE_FALL_SPEED, landed: false, kind });
 }
 
 function applyCrateEffect(worm, kind) {
+  playPickupSound();
   if (kind === "heal") {
     worm.hp = Math.min(worm.maxHp, worm.hp + CRATE_HEAL_AMOUNT);
     spawnFloater(worm.x, worm.y - 60, "+" + CRATE_HEAL_AMOUNT + " HP");
@@ -674,7 +1109,7 @@ function updateCrates(dt) {
     const c = crates[i];
     if (!c.landed) {
       c.y += c.vy * dt;
-      const groundCol = clamp(Math.round(c.x), 0, CW - 1);
+      const groundCol = clamp(Math.round(c.x), 0, WW - 1);
       const groundY = terrain.heights[groundCol];
       if (c.y >= groundY) {
         c.y = groundY;
@@ -735,18 +1170,19 @@ function placeMines() {
   let attempts = 0;
   while (mines.length < MINE_COUNT && attempts < 200) {
     attempts++;
-    const x = 70 + Math.random() * (CW - 140);
+    const x = 70 + Math.random() * (WW - 140);
+    if (!hasGroundAt(x) || isDecoratedAt(x)) continue;
     const tooCloseToWorm = worms.some(w => Math.abs(w.x - x) < 70);
     const tooCloseToMine = mines.some(m => Math.abs(m.x - x) < 90);
     if (tooCloseToWorm || tooCloseToMine) continue;
-    const col = clamp(Math.round(x), 0, CW - 1);
+    const col = clamp(Math.round(x), 0, WW - 1);
     mines.push({ x: col, y: terrain.heights[col], vy: 0, armed: false, fuse: 0 });
   }
 }
 
 function updateMines(dt) {
   for (const mine of mines) {
-    const groundCol = clamp(Math.round(mine.x), 0, CW - 1);
+    const groundCol = clamp(Math.round(mine.x), 0, WW - 1);
     const groundY = terrain.heights[groundCol];
     if (mine.y < groundY - 2) {
       mine.vy += GRAVITY * dt;
@@ -764,6 +1200,7 @@ function updateMines(dt) {
         mine.fuse = MINE_FUSE;
         spawnFloater(mine.x, mine.y - 20, "МИНА!");
         announce("МИНА! БЕГИ!", COLORS.hpRed);
+        playMineAlarmSound();
       }
       continue;
     }
@@ -778,6 +1215,7 @@ function updateMines(dt) {
 }
 
 function detonateMine(mine) {
+  playExplosionSound(MINE_RADIUS);
   spawnExplosionEffect(mine.x, mine.y, MINE_RADIUS);
   digCrater(mine.x, mine.y, MINE_RADIUS);
   let hitAnyone = false;
@@ -790,11 +1228,12 @@ function detonateMine(mine) {
       applyDamage(w, Math.max(dmg, 1));
       const ang = Math.atan2(wy - mine.y, w.x - mine.x);
       w.vy = -80 - 60 * (1 - d / MINE_RADIUS);
-      w.x = clamp(w.x + Math.cos(ang) * 10, 10, CW - 10);
+      w.x = clamp(w.x + Math.cos(ang) * 10, 10, WW - 10);
       w.state = "falling";
       hitAnyone = true;
     }
   }
+  checkBarrelChain(mine.x, mine.y, MINE_RADIUS);
   if (hitAnyone) state.screen = "EXPLOSION";
 }
 
@@ -810,11 +1249,159 @@ function drawMines() {
   }
 }
 
+// ===== NAPALM BARRELS / FIRE =====
+
+const BARREL_COUNT_MIN = 3;
+const BARREL_COUNT_MAX = 5;
+const BARREL_RADIUS = 45;
+const BARREL_DAMAGE = 30;
+const FIRE_ZONE_HALF_WIDTH = 55;
+const FIRE_ZONE_DURATION = 5;
+const FIRE_TICK_INTERVAL = 0.6;
+const FIRE_TICK_DAMAGE = 7;
+
+function placeBarrels() {
+  barrels = [];
+  const targetCount = BARREL_COUNT_MIN + Math.floor(Math.random() * (BARREL_COUNT_MAX - BARREL_COUNT_MIN + 1));
+  let spacing = 100;
+  for (let pass = 0; pass < 4 && barrels.length < BARREL_COUNT_MIN; pass++) {
+    let attempts = 0;
+    while (barrels.length < targetCount && attempts < 400) {
+      attempts++;
+      const x = 60 + Math.random() * (WW - 120);
+      if (!hasGroundAt(x) || isDecoratedAt(x)) continue;
+      const tooCloseToWorm = worms.some(w => Math.abs(w.x - x) < 50);
+      const tooCloseToMine = mines.some(m => Math.abs(m.x - x) < 50);
+      const tooCloseToBarrel = barrels.some(b => Math.abs(b.x - x) < spacing);
+      if (tooCloseToWorm || tooCloseToMine || tooCloseToBarrel) continue;
+      const col = clamp(Math.round(x), 0, WW - 1);
+      barrels.push({ x: col, y: terrain.heights[col], vy: 0, exploded: false });
+    }
+    spacing *= 0.55;
+  }
+}
+
+function updateBarrels(dt) {
+  for (const b of barrels) {
+    if (b.exploded) continue;
+    const groundCol = clamp(Math.round(b.x), 0, WW - 1);
+    const groundY = terrain.heights[groundCol];
+    if (b.y < groundY - 2) {
+      b.vy += GRAVITY * dt;
+      b.y += b.vy * dt;
+      if (b.y >= groundY) { b.y = groundY; b.vy = 0; }
+    } else {
+      b.y = groundY;
+      b.vy = 0;
+    }
+  }
+  barrels = barrels.filter(b => !b.exploded);
+}
+
+function findBarrelNear(x, y, r) {
+  for (const b of barrels) {
+    if (b.exploded) continue;
+    if (Math.hypot(b.x - x, (b.y - 8) - y) < r) return b;
+  }
+  return null;
+}
+
+function spawnFireZone(x) {
+  fireZones.push({ x0: x - FIRE_ZONE_HALF_WIDTH, x1: x + FIRE_ZONE_HALF_WIDTH, timer: FIRE_ZONE_DURATION, tickTimer: 0 });
+}
+
+function checkBarrelChain(x, y, radius) {
+  for (const b of barrels) {
+    if (b.exploded) continue;
+    if (Math.hypot(b.x - x, b.y - y) < radius + 20) triggerBarrel(b);
+  }
+}
+
+function triggerBarrel(barrel, firedBy) {
+  if (barrel.exploded) return;
+  barrel.exploded = true;
+  explode(barrel.x, barrel.y, BARREL_RADIUS, BARREL_DAMAGE, firedBy);
+  spawnFireZone(barrel.x);
+  announce("НАПАЛМ РАЗЛИЛСЯ!", COLORS.fire2);
+}
+
+function updateFireZones(dt) {
+  let anyBurnDeath = false;
+  for (let i = fireZones.length - 1; i >= 0; i--) {
+    const fz = fireZones[i];
+    fz.timer -= dt;
+    fz.tickTimer -= dt;
+    if (fz.tickTimer <= 0) {
+      fz.tickTimer = FIRE_TICK_INTERVAL;
+      for (const w of worms) {
+        if (!w.alive || w.state === "falling") continue;
+        if (w.x >= fz.x0 && w.x <= fz.x1) {
+          const wasAlive = w.alive;
+          applyDamage(w, FIRE_TICK_DAMAGE);
+          spawnFloater(w.x, w.y - 60, "ГОРИТ!");
+          if (wasAlive && !w.alive) anyBurnDeath = true;
+        }
+      }
+    }
+    if (fz.timer <= 0) fireZones.splice(i, 1);
+  }
+  if (anyBurnDeath) {
+    const playerAlive = teamWorms("player").some(w => w.alive);
+    const aiAlive = teamWorms("ai").some(w => w.alive);
+    if (!playerAlive || !aiAlive) {
+      state.screen = "GAME_OVER";
+      state.playerWon = playerAlive;
+      if (playerAlive) playVictorySound(); else playDefeatSound();
+      return;
+    }
+    if (AIM_VISIBLE_SCREENS.has(state.screen)) {
+      const activeWorm = getActiveWorm(state.turn);
+      if (!activeWorm || !activeWorm.alive) resolveAfterExplosion();
+    }
+  }
+}
+
+function drawBarrels() {
+  for (const b of barrels) {
+    if (b.exploded) continue;
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillRect(b.x - 8, b.y - 17, 16, 17);
+    ctx.fillStyle = "#c2401f";
+    ctx.fillRect(b.x - 7, b.y - 16, 14, 15);
+    ctx.fillStyle = "#8a2a12";
+    ctx.fillRect(b.x - 7, b.y - 11, 14, 2);
+    ctx.fillStyle = "#8a2a12";
+    ctx.fillRect(b.x - 7, b.y - 5, 14, 2);
+    ctx.fillStyle = COLORS.fire1;
+    ctx.fillRect(b.x - 3, b.y - 15, 6, 4);
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillRect(b.x - 3, b.y - 15, 6, 1);
+  }
+}
+
+function drawFireZones() {
+  for (const fz of fireZones) {
+    const alpha = clamp(fz.timer / 1.0, 0, 1);
+    ctx.globalAlpha = Math.min(1, alpha);
+    for (let x = Math.floor(fz.x0); x <= fz.x1; x += 4) {
+      const col = clamp(Math.round(x), 0, WW - 1);
+      const groundY = terrain.heights[col];
+      if (groundY >= WATER_BASE_LEVEL) continue;
+      const flicker = 6 + Math.abs(Math.sin(x * 0.3 + waterTime * 9)) * 10;
+      ctx.fillStyle = COLORS.fire2;
+      ctx.fillRect(x, groundY - flicker, 3, flicker);
+      ctx.fillStyle = COLORS.fire1;
+      ctx.fillRect(x, groundY - flicker * 0.5, 3, flicker * 0.5);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
 function drawSky() {
   ctx.fillStyle = COLORS.sky1;
-  ctx.fillRect(0, 0, CW, CH);
+  ctx.fillRect(0, 0, VW, VH);
   ctx.fillStyle = COLORS.sky2;
-  ctx.fillRect(0, 140, CW, CH - 140);
+  ctx.fillRect(0, 140, VW, VH - 140);
   ctx.fillStyle = COLORS.white;
   for (const s of STARS) ctx.fillRect(Math.round(s.x), Math.round(s.y), 2, 2);
 }
@@ -825,7 +1412,7 @@ const PLAYER_NAMES = ["СПАЙК", "ДЮК", "ВЖИК", "БАТОН"];
 const AI_NAMES = ["ГРЫЗЬ", "ШНОБЕЛЬ", "ХРЯЩ", "БИВЕНЬ"];
 
 function makeWorm(team, idx, x) {
-  const groundY = terrain.heights[clamp(Math.round(x), 0, CW - 1)];
+  const groundY = terrain.heights[clamp(Math.round(x), 0, WW - 1)];
   const names = team === "player" ? PLAYER_NAMES : AI_NAMES;
   return {
     team, idx, x, y: groundY, vy: 0,
@@ -837,6 +1424,27 @@ function makeWorm(team, idx, x) {
     power: 0, charging: false, targetPower: 0,
     state: "idle", animState: "idle", animTimer: 0,
   };
+}
+
+const MIN_WORM_SPACING = 55;
+
+function placeWormsScattered() {
+  const teams = ["player", "player", "player", "ai", "ai", "ai"];
+  const positions = [];
+  for (let i = 0; i < teams.length; i++) {
+    let x, attempts = 0;
+    do {
+      x = 50 + Math.random() * (WW - 100);
+      attempts++;
+    } while (attempts < 300 && (!hasGroundAt(x) || isDecoratedAt(x) || positions.some(px => Math.abs(px - x) < MIN_WORM_SPACING)));
+    positions.push(x);
+  }
+  const teamIdx = { player: 0, ai: 0 };
+  return teams.map((team, i) => {
+    const w = makeWorm(team, teamIdx[team], positions[i]);
+    teamIdx[team]++;
+    return w;
+  });
 }
 
 function teamWorms(team) { return worms.filter(w => w.team === team); }
@@ -855,6 +1463,8 @@ function applyDamage(worm, dmg) {
   if (dmg > 0 && worm.alive) {
     const phrase = HIT_PHRASES[Math.floor(Math.random() * HIT_PHRASES.length)];
     spawnFloater(worm.x, worm.y - 60, phrase);
+    playHitSound();
+    setTimeout(playHitVoiceSound, 130);
   }
   worm.hp = Math.max(0, worm.hp - dmg);
   if (worm.hp <= 0 && worm.alive) worm.alive = false;
@@ -862,7 +1472,7 @@ function applyDamage(worm, dmg) {
 
 function updateWormPhysics(worm, dt) {
   if (!worm.alive) return;
-  const gx = clamp(Math.round(worm.x), 0, CW - 1);
+  const gx = clamp(Math.round(worm.x), 0, WW - 1);
   const groundY = terrain.heights[gx];
   if (worm.state === "falling") {
     worm.vy += GRAVITY * dt;
@@ -884,9 +1494,9 @@ function updateWormPhysics(worm, dt) {
 }
 
 function tryMove(worm, dir, dt) {
-  const nx = clamp(worm.x + dir * WALK_SPEED * dt, 10, CW - 10);
-  const curCol = clamp(Math.round(worm.x), 0, CW - 1);
-  const nextCol = clamp(Math.round(nx), 0, CW - 1);
+  const nx = clamp(worm.x + dir * WALK_SPEED * dt, 10, WW - 10);
+  const curCol = clamp(Math.round(worm.x), 0, WW - 1);
+  const nextCol = clamp(Math.round(nx), 0, WW - 1);
   const curH = terrain.heights[curCol];
   const nextH = terrain.heights[nextCol];
   if (curH - nextH > MAX_CLIMB) return;
@@ -905,7 +1515,11 @@ function findWormNear(x, y, r) {
   return null;
 }
 
-function explode(x, y, radius, damage) {
+function explode(x, y, radius, damage, firedBy) {
+  if (firedBy && firedBy.ownerTeam === "ai" && firedBy.aiTargetX !== undefined) {
+    state.aiLastErrorPx = x - firedBy.aiTargetX;
+  }
+  playExplosionSound(radius);
   spawnExplosionEffect(x, y, radius);
   digCrater(x, y, radius);
   for (const w of worms) {
@@ -917,16 +1531,18 @@ function explode(x, y, radius, damage) {
       applyDamage(w, Math.max(dmg, 1));
       const ang = Math.atan2(wy - y, w.x - x);
       w.vy = -80 - 60 * (1 - d / radius);
-      w.x = clamp(w.x + Math.cos(ang) * 10, 10, CW - 10);
+      w.x = clamp(w.x + Math.cos(ang) * 10, 10, WW - 10);
       w.state = "falling";
     }
   }
+  checkBarrelChain(x, y, radius);
   state.screen = "EXPLOSION";
 }
 
 // ===== PROJECTILES =====
 
 function spawnProjectile(worm, type, power) {
+  playShootSound(type);
   const cfg = WEAPONS[type];
   const speed = cfg.minSpeed + power * (cfg.maxSpeed - cfg.minSpeed);
   const angle = worm.aimAngle;
@@ -938,6 +1554,7 @@ function spawnProjectile(worm, type, power) {
     type, x: originX, y: originY,
     vx: dirX * speed, vy: dirY * speed,
     ownerTeam: worm.team, bounces: 0, fuse: cfg.fuse || 0,
+    aiTargetX: worm.team === "ai" ? worm.aiIntendedTargetX : undefined,
   });
   state.screen = "PROJECTILE";
 }
@@ -952,7 +1569,7 @@ function handleTerrainHit(p, x, y) {
     return false;
   }
   const cfg = WEAPONS[p.type];
-  explode(x, y, cfg.radius, cfg.damage);
+  explode(x, y, cfg.radius, cfg.damage, p);
   return true;
 }
 
@@ -963,7 +1580,7 @@ function updateProjectiles(dt) {
       p.fuse -= dt;
       if (p.fuse <= 0) {
         const cfg = WEAPONS[p.type];
-        explode(p.x, p.y, cfg.radius, cfg.damage);
+        explode(p.x, p.y, cfg.radius, cfg.damage, p);
         projectiles.splice(i, 1);
         continue;
       }
@@ -977,26 +1594,32 @@ function updateProjectiles(dt) {
       const sdt = dt / steps;
       const nx = p.x + p.vx * sdt;
       const ny = p.y + p.vy * sdt;
-      if (ny >= CH) {
+      if (ny >= WH) {
         const cfg = WEAPONS[p.type];
-        explode(clamp(nx, 0, CW - 1), CH - 1, cfg.radius, cfg.damage);
+        explode(clamp(nx, 0, WW - 1), WH - 1, cfg.radius, cfg.damage, p);
         exploded = true;
         break;
       }
-      if (nx >= 0 && nx < CW && ny >= 0 && ny < CH && terrain.mask[Math.floor(ny) * CW + Math.floor(nx)]) {
+      if (nx >= 0 && nx < WW && ny >= 0 && ny < WH && terrain.mask[Math.floor(ny) * WW + Math.floor(nx)]) {
         exploded = handleTerrainHit(p, nx, ny);
+        break;
+      }
+      const hitBarrel = findBarrelNear(nx, ny, WORM_HIT_RADIUS);
+      if (hitBarrel) {
+        triggerBarrel(hitBarrel, p);
+        exploded = true;
         break;
       }
       const hitWorm = findWormNear(nx, ny, WORM_HIT_RADIUS);
       if (hitWorm) {
         const cfg = WEAPONS[p.type];
-        explode(nx, ny, cfg.radius, cfg.damage);
+        explode(nx, ny, cfg.radius, cfg.damage, p);
         exploded = true;
         break;
       }
       p.x = nx;
       p.y = ny;
-      if (p.x < -150 || p.x > CW + 150 || p.y > CH + 300) { outOfBounds = true; break; }
+      if (p.x < -150 || p.x > WW + 150 || p.y > WH + 300) { outOfBounds = true; break; }
     }
     if (exploded) { projectiles.splice(i, 1); continue; }
     if (outOfBounds) { projectiles.splice(i, 1); state.screen = "EXPLOSION"; }
@@ -1039,12 +1662,13 @@ function updateMatchTimer(dt) {
 
 function updateWaterDamage() {
   let anyDrowned = false;
+  const deathText = state.biome === "lava" ? "СГОРЕЛ!" : "ТОНЕТ!";
   for (const w of worms) {
     if (!w.alive) continue;
     if (w.y >= state.waterLevel) {
       w.hp = 0;
       w.alive = false;
-      spawnFloater(w.x, w.y - 60, "ТОНЕТ!");
+      spawnFloater(w.x, w.y - 60, deathText);
       anyDrowned = true;
     }
   }
@@ -1054,6 +1678,12 @@ function updateWaterDamage() {
     if (!playerAlive || !aiAlive) {
       state.screen = "GAME_OVER";
       state.playerWon = playerAlive;
+      if (playerAlive) playVictorySound(); else playDefeatSound();
+      return;
+    }
+    if (AIM_VISIBLE_SCREENS.has(state.screen)) {
+      const activeWorm = getActiveWorm(state.turn);
+      if (!activeWorm || !activeWorm.alive) resolveAfterExplosion();
     }
   }
 }
@@ -1062,21 +1692,77 @@ function updateWaterAnim(dt) {
   waterTime += dt;
 }
 
+const WATER_PALETTE = { base: "rgba(40,90,160,0.55)", waveTop: "rgba(170,215,245,0.8)", waveBottom: "rgba(190,225,250,0.35)", speed1: 2.2, speed2: 1.5 };
+const LAVA_PALETTE = { base: "rgba(200,45,10,0.8)", waveTop: "rgba(255,175,40,0.85)", waveBottom: "rgba(255,90,20,0.45)", speed1: 1.0, speed2: 0.6 };
+
 function drawWater() {
-  const y = clamp(state.waterLevel, 0, CH);
-  ctx.fillStyle = "rgba(40,90,160,0.55)";
-  ctx.fillRect(0, y, CW, CH - y);
+  const p = state.biome === "lava" ? LAVA_PALETTE : WATER_PALETTE;
+  const y = clamp(state.waterLevel, 0, WH);
+  ctx.fillStyle = p.base;
+  ctx.fillRect(0, y, WW, WH - y);
 
   const step = 6;
-  ctx.fillStyle = "rgba(170,215,245,0.8)";
-  for (let x = 0; x <= CW; x += step) {
-    const wy = y + Math.round(Math.sin(x * 0.045 + waterTime * 2.2) * 3);
+  ctx.fillStyle = p.waveTop;
+  for (let x = 0; x <= WW; x += step) {
+    const wy = y + Math.round(Math.sin(x * 0.045 + waterTime * p.speed1) * 3);
     ctx.fillRect(x, wy, step - 1, 2);
   }
-  ctx.fillStyle = "rgba(190,225,250,0.35)";
-  for (let x = 0; x <= CW; x += step) {
-    const wy = y + 9 + Math.round(Math.sin(x * 0.03 + waterTime * 1.5 + 2.4) * 3);
+  ctx.fillStyle = p.waveBottom;
+  for (let x = 0; x <= WW; x += step) {
+    const wy = y + 9 + Math.round(Math.sin(x * 0.03 + waterTime * p.speed2 + 2.4) * 3);
     ctx.fillRect(x, wy, step - 1, 2);
+  }
+}
+
+// ===== CAMERA =====
+
+function cameraFocusX() {
+  if (state.screen === "PROJECTILE" && projectiles.length > 0) {
+    return projectiles[projectiles.length - 1].x;
+  }
+  if (state.screen === "EXPLOSION" && explosions.length > 0) {
+    return explosions[explosions.length - 1].x;
+  }
+  const worm = getActiveWorm(state.turn);
+  return worm ? worm.x : camera.x + VW / 2;
+}
+
+function updateCamera(dt) {
+  const maxX = Math.max(0, WW - VW);
+  if (state.screen === "MENU" || state.screen === "INTRO") { camera.x = clamp(camera.x, 0, maxX); return; }
+  const desired = clamp(cameraFocusX() - VW / 2, 0, maxX);
+  camera.x += (desired - camera.x) * Math.min(1, dt * 6);
+}
+
+const INTRO_HOLD = 0.35;
+const INTRO_PAN = 0.9;
+const INTRO_RETURN = 0.7;
+
+function easeInOut(t) { return t * t * (3 - 2 * t); }
+
+function updateIntroPan(dt) {
+  state.introTimer += dt;
+  const t = state.introTimer;
+  const maxX = Math.max(0, WW - VW);
+  const xs = worms.map(w => w.x);
+  const minWormX = xs.length ? Math.min(...xs) : 0;
+  const maxWormX = xs.length ? Math.max(...xs) : WW;
+  const leftX = clamp(minWormX - VW / 2, 0, maxX);
+  const rightX = clamp(maxWormX - VW / 2, 0, maxX);
+  const finalX = clamp(getActiveWorm("player").x - VW / 2, 0, maxX);
+
+  if (t < INTRO_HOLD) {
+    camera.x = leftX;
+  } else if (t < INTRO_HOLD + INTRO_PAN) {
+    camera.x = leftX + (rightX - leftX) * easeInOut((t - INTRO_HOLD) / INTRO_PAN);
+  } else if (t < INTRO_HOLD * 2 + INTRO_PAN) {
+    camera.x = rightX;
+  } else if (t < INTRO_HOLD * 2 + INTRO_PAN + INTRO_RETURN) {
+    camera.x = rightX + (finalX - rightX) * easeInOut((t - (INTRO_HOLD * 2 + INTRO_PAN)) / INTRO_RETURN);
+  } else {
+    camera.x = finalX;
+    state.screen = "PLAYER_TURN";
+    announce("ХОД: " + getActiveWorm("player").name, COLORS.fire1);
   }
 }
 
@@ -1096,8 +1782,10 @@ function resolveAfterExplosion() {
   if (!playerAlive || !aiAlive) {
     state.screen = "GAME_OVER";
     state.playerWon = playerAlive;
+    if (playerAlive) playVictorySound(); else playDefeatSound();
     return;
   }
+  playTurnChimeSound();
   state.turn = state.turn === "player" ? "ai" : "player";
   advanceActiveWorm(state.turn);
   state.turnCount++;
@@ -1108,7 +1796,8 @@ function resolveAfterExplosion() {
     state.screen = "PLAYER_TURN";
     announce("ХОД: " + getActiveWorm("player").name, COLORS.fire1);
   } else {
-    state.aiPauseTimer = 0.9;
+    const pause = aiDifficulty().reactionPause;
+    state.aiPauseTimer = pause[0] + Math.random() * (pause[1] - pause[0]);
     state.screen = "AI_TURN";
     announce("ХОД ПРОТИВНИКА: " + getActiveWorm("ai").name, COLORS.hpRed);
   }
@@ -1118,10 +1807,14 @@ function selectWeapon(type) {
   if (state.screen === "PLAYER_TURN") state.playerWeapon = type;
 }
 
+function selectDifficulty(level) {
+  if (state.screen === "MENU" || state.screen === "GAME_OVER") state.difficulty = level;
+}
+
 const AIR_MOVE_SPEED = 120;
 
 function tryAirMove(worm, dir, dt) {
-  worm.x = clamp(worm.x + dir * AIR_MOVE_SPEED * dt, 10, CW - 10);
+  worm.x = clamp(worm.x + dir * AIR_MOVE_SPEED * dt, 10, WW - 10);
   worm.facing = dir;
 }
 
@@ -1178,12 +1871,70 @@ function handleJump() {
   if (!worm || !worm.alive || worm.state === "falling") return;
   worm.vy = JUMP_VY;
   worm.state = "falling";
+  playJumpSound();
+}
+
+function nearestOf(list, aiWorm) {
+  return list.reduce((best, w) => (Math.abs(w.x - aiWorm.x) < Math.abs(best.x - aiWorm.x) ? w : best));
 }
 
 function pickPlayerTarget(aiWorm) {
+  const preset = aiDifficulty();
   const alive = teamWorms("player").filter(w => w.alive);
-  if (Math.random() < 0.3) return alive[Math.floor(Math.random() * alive.length)];
-  return alive.reduce((best, w) => (Math.abs(w.x - aiWorm.x) < Math.abs(best.x - aiWorm.x) ? w : best));
+  const finishable = alive.filter(w => w.hp <= preset.finishHpThreshold);
+  if (finishable.length > 0 && Math.random() < preset.killPriorityChance) return nearestOf(finishable, aiWorm);
+  if (Math.random() < preset.randomTargetChance) return alive[Math.floor(Math.random() * alive.length)];
+  return nearestOf(alive, aiWorm);
+}
+
+function pathIsSafe(worm, dir, dist) {
+  const steps = Math.max(1, Math.ceil(dist / 20));
+  let prevH = terrain.heights[clamp(Math.round(worm.x), 0, WW - 1)];
+  for (let i = 1; i <= steps; i++) {
+    const x = worm.x + dir * (dist * i / steps);
+    if (!hasGroundAt(x)) return false;
+    const col = clamp(Math.round(x), 0, WW - 1);
+    const h = terrain.heights[col];
+    if (Math.abs(h - prevH) > FALL_TRIGGER) return false;
+    prevH = h;
+  }
+  return true;
+}
+
+function lineOfSightBlocked(worm, target) {
+  const x0 = worm.x, y0 = worm.y - 24;
+  const x1 = target.x, y1 = target.y - 24;
+  const steps = 10;
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const sx = x0 + (x1 - x0) * t;
+    const sy = y0 + (y1 - y0) * t;
+    const col = clamp(Math.round(sx), 0, WW - 1);
+    if (terrain.heights[col] < sy - 6) return true;
+  }
+  return false;
+}
+
+function estimateAiAim(worm, target, weaponType) {
+  const cfg = WEAPONS[weaponType];
+  const baseAngleDeg = isGrenadeLike(weaponType) ? 55 : 47;
+  const angle = -baseAngleDeg * Math.PI / 180;
+  const facing = target.x >= worm.x ? 1 : -1;
+  const originX = worm.x + Math.cos(angle) * facing * GUN_LEN;
+  const originY = (worm.y - 24) + Math.sin(angle) * GUN_LEN;
+  const dist = Math.abs(target.x - originX);
+  const dyRel = (target.y - 14) - originY;
+  const cos = Math.cos(angle), tan = Math.sin(angle) / cos;
+  const denom = cos * cos * (dyRel - dist * tan);
+  let speed;
+  if (denom > 1) {
+    speed = Math.sqrt((0.5 * GRAVITY * dist * dist) / denom);
+  } else {
+    speed = cfg.maxSpeed * 0.75;
+  }
+  speed = clamp(speed, cfg.minSpeed, cfg.maxSpeed * 1.05);
+  const power = clamp((speed - cfg.minSpeed) / (cfg.maxSpeed - cfg.minSpeed), 0.15, 1);
+  return { angle, power };
 }
 
 function updateAiTurnPause(dt) {
@@ -1200,18 +1951,36 @@ function updateAiTurnPause(dt) {
 }
 
 function prepareAiShot() {
+  const preset = aiDifficulty();
   const worm = getActiveWorm("ai");
   const target = pickPlayerTarget(worm);
   const dx = target.x - worm.x;
   worm.facing = dx >= 0 ? 1 : -1;
   worm.shootFacing = worm.facing;
   const dist = Math.abs(dx);
-  state.aiWeapon = Math.random() < 0.7 ? "bazooka" : "grenade";
-  let angle = -50 * Math.PI / 180;
-  let power = clamp(0.35 + dist / 900, 0.25, 1);
-  angle += (Math.random() * 2 - 1) * (10 * Math.PI / 180);
-  power += (Math.random() * 2 - 1) * 0.08;
-  power = clamp(power, 0.2, 1);
+
+  const blocked = lineOfSightBlocked(worm, target);
+  const preferGrenade = blocked || Math.abs(worm.y - target.y) > 90;
+  const bestWeapon = preferGrenade ? "grenade" : "bazooka";
+  const otherWeapon = preferGrenade ? "bazooka" : "grenade";
+  state.aiWeapon = Math.random() < preset.weaponSkill ? bestWeapon : otherWeapon;
+
+  worm.aiWantsSuper = false;
+  if (state.aiSuperGrenade && state.aiWeapon === "grenade") {
+    const clusterCount = teamWorms("player").filter(w => w.alive && Math.hypot(w.x - target.x, w.y - target.y) < 70).length;
+    worm.aiWantsSuper = clusterCount >= preset.superClusterThreshold;
+  }
+
+  let aimTargetX = target.x;
+  if (preset.correction > 0 && state.aiLastErrorPx !== null) {
+    aimTargetX -= state.aiLastErrorPx * preset.correction;
+  }
+  worm.aiIntendedTargetX = target.x;
+
+  const aim = estimateAiAim(worm, { x: aimTargetX, y: target.y }, worm.aiWantsSuper ? "supergrenade" : state.aiWeapon);
+  const angleNoise = preset.angleNoiseDeg * Math.PI / 180;
+  let angle = aim.angle + (Math.random() * 2 - 1) * angleNoise;
+  let power = clamp(aim.power + (Math.random() * 2 - 1) * preset.powerNoise, 0.15, 1);
   worm.aimAngle = clamp(angle, -MAX_AIM, MAX_AIM);
   worm.targetPower = power;
   worm.power = 0;
@@ -1219,19 +1988,26 @@ function prepareAiShot() {
   const teammate = teamWorms("ai").find(w => w !== worm && w.alive);
   const bunched = teammate && Math.abs(worm.x - teammate.x) < 70;
 
-  const lookAheadCol = clamp(Math.round(worm.x + worm.facing * 24), 0, CW - 1);
-  const curCol = clamp(Math.round(worm.x), 0, CW - 1);
+  const lookAheadCol = clamp(Math.round(worm.x + worm.facing * 24), 0, WW - 1);
+  const curCol = clamp(Math.round(worm.x), 0, WW - 1);
   const nearEdge = Math.abs(terrain.heights[lookAheadCol] - terrain.heights[curCol]) > FALL_TRIGGER;
 
+  state.aiMoveDir = 0;
+  state.aiMoveTimer = 0;
   if (bunched) {
-    state.aiMoveDir = worm.x < teammate.x ? -1 : 1;
-    state.aiMoveTimer = 0.6 + Math.random() * 0.4;
+    const dir = worm.x < teammate.x ? -1 : 1;
+    const dist = 0.6 * WALK_SPEED;
+    if (pathIsSafe(worm, dir, dist)) {
+      state.aiMoveDir = dir;
+      state.aiMoveTimer = 0.6 + Math.random() * 0.4;
+    }
   } else if (nearEdge) {
-    state.aiMoveDir = -worm.facing;
-    state.aiMoveTimer = 0.5 + Math.random() * 0.3;
-  } else {
-    state.aiMoveDir = 0;
-    state.aiMoveTimer = 0;
+    const dir = -worm.facing;
+    const dist = 0.5 * WALK_SPEED;
+    if (pathIsSafe(worm, dir, dist)) {
+      state.aiMoveDir = dir;
+      state.aiMoveTimer = 0.5 + Math.random() * 0.3;
+    }
   }
 }
 
@@ -1259,7 +2035,7 @@ function updateAiCharging(dt) {
   if (worm.power >= worm.targetPower - 0.001) {
     worm.charging = false;
     let weaponType = state.aiWeapon;
-    if (weaponType === "grenade" && state.aiSuperGrenade) {
+    if (weaponType === "grenade" && state.aiSuperGrenade && worm.aiWantsSuper) {
       weaponType = "supergrenade";
       state.aiSuperGrenade = false;
     }
@@ -1272,20 +2048,18 @@ function updateAiCharging(dt) {
 
 function startMatch() {
   terrain = generateTerrain();
-  redrawTerrainColumns(0, CW - 1);
-  worms = [
-    makeWorm("player", 0, CW * 0.18),
-    makeWorm("player", 1, CW * 0.30),
-    makeWorm("ai", 0, CW * 0.70),
-    makeWorm("ai", 1, CW * 0.82),
-  ];
+  redrawTerrainColumns(0, WW - 1);
+  worms = placeWormsScattered();
   projectiles = [];
   explosions = [];
   floaters = [];
   crates = [];
+  fireZones = [];
   placeMines();
+  placeBarrels();
   state.turn = "player";
   state.activeIndex = { player: 0, ai: 0 };
+  camera.x = clamp(Math.min(...worms.map(w => w.x)) - VW / 2, 0, Math.max(0, WW - VW));
   state.wind = Math.random() * 2 - 1;
   state.playerWeapon = "bazooka";
   state.playerSuperGrenade = false;
@@ -1296,8 +2070,11 @@ function startMatch() {
   state.suddenDeath = false;
   state.waterLevel = WATER_BASE_LEVEL;
   state.banner = null;
-  state.screen = "PLAYER_TURN";
-  announce("ХОД: " + getActiveWorm("player").name, COLORS.fire1);
+  state.introTimer = 0;
+  state.biome = Math.random() < 0.5 ? "lava" : "water";
+  state.aiLastErrorPx = null;
+  state.screen = "INTRO";
+  announce("ОБЗОР ПОЛЯ БОЯ", COLORS.white);
 }
 
 function handleEnter() {
@@ -1306,39 +2083,153 @@ function handleEnter() {
 
 // ===== HUD =====
 
+function drawWeaponIcon(x, y, type) {
+  if (type === "grenade") {
+    ctx.fillStyle = COLORS.outline;
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLORS.grenade;
+    ctx.beginPath();
+    ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillRect(x - 1, y - 9, 2, 4);
+  } else {
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillRect(x - 9, y - 4, 18, 8);
+    ctx.fillStyle = COLORS.bazooka;
+    ctx.fillRect(x - 8, y - 3, 15, 6);
+    ctx.fillStyle = "#8a8a8a";
+    ctx.fillRect(x + 5, y - 4, 4, 8);
+  }
+}
+
+function drawHazardIcon(x, y, isLava) {
+  if (isLava) {
+    ctx.fillStyle = COLORS.fire2;
+    ctx.beginPath();
+    ctx.moveTo(x, y + 7);
+    ctx.quadraticCurveTo(x - 5, y - 1, x, y - 8);
+    ctx.quadraticCurveTo(x + 5, y - 1, x, y + 7);
+    ctx.fill();
+    ctx.fillStyle = COLORS.fire1;
+    ctx.beginPath();
+    ctx.moveTo(x, y + 4);
+    ctx.quadraticCurveTo(x - 2, y, x, y - 4);
+    ctx.quadraticCurveTo(x + 2, y, x, y + 4);
+    ctx.fill();
+  } else {
+    ctx.fillStyle = "#4a90d8";
+    ctx.beginPath();
+    ctx.moveTo(x, y - 8);
+    ctx.quadraticCurveTo(x - 6, y + 2, x, y + 7);
+    ctx.quadraticCurveTo(x + 6, y + 2, x, y - 8);
+    ctx.fill();
+  }
+}
+
+function drawSpeakerIcon(x, y, muted) {
+  ctx.fillStyle = muted ? "rgba(240,234,216,0.5)" : COLORS.white;
+  ctx.beginPath();
+  ctx.moveTo(x - 6, y - 3);
+  ctx.lineTo(x - 3, y - 3);
+  ctx.lineTo(x + 1, y - 6);
+  ctx.lineTo(x + 1, y + 6);
+  ctx.lineTo(x - 3, y + 3);
+  ctx.lineTo(x - 6, y + 3);
+  ctx.closePath();
+  ctx.fill();
+  if (muted) {
+    ctx.strokeStyle = COLORS.hpRed;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x + 3, y - 5);
+    ctx.lineTo(x + 9, y + 5);
+    ctx.moveTo(x + 9, y - 5);
+    ctx.lineTo(x + 3, y + 5);
+    ctx.stroke();
+  } else {
+    ctx.strokeStyle = COLORS.white;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x + 2, y, 6, -0.6, 0.6);
+    ctx.stroke();
+  }
+}
+
+function drawTurnTimerBar(x, y, w, h) {
+  const pct = clamp(state.turnTimer / TURN_TIME_LIMIT, 0, 1);
+  ctx.fillStyle = COLORS.hpBg;
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = state.turnTimer <= 5 ? COLORS.hpRed : COLORS.hpGreen;
+  ctx.fillRect(x, y, w * pct, h);
+  ctx.strokeStyle = COLORS.outline;
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+}
+
 function drawHUD() {
-  if (state.screen === "MENU" || state.screen === "GAME_OVER") return;
-  ctx.textAlign = "left";
+  if (state.screen === "MENU" || state.screen === "GAME_OVER" || state.screen === "INTRO") return;
+
+  // top bar is inset from the very top/edges so the rounded CRT bezel never clips it
+  const barTop = 8, barH = 30, marginX = 58;
+  ctx.fillStyle = "rgba(10,8,6,0.62)";
+  ctx.fillRect(0, barTop, VW, barH);
   ctx.textBaseline = "top";
-  ctx.font = "bold 16px monospace";
-  ctx.fillStyle = COLORS.white;
-  ctx.fillText(state.turn === "player" ? "ВАШ ХОД" : "ХОД ПРОТИВНИКА", 14, 10);
-  const windArrow = state.wind > 0.05 ? "→" : (state.wind < -0.05 ? "←" : "-");
-  ctx.fillText("ВЕТЕР " + windArrow + " " + Math.abs(Math.round(state.wind * 10)), 340, 10);
+
+  // left zone: whose turn + turn timer bar (with seconds readout)
+  ctx.textAlign = "left";
+  ctx.font = "bold 14px monospace";
+  ctx.fillStyle = state.turn === "player" ? COLORS.fire1 : COLORS.hpRed;
+  ctx.fillText(state.turn === "player" ? "ВАШ ХОД" : "ХОД ПРОТИВНИКА", marginX, barTop + 4);
+  if (state.turn === "player" && (state.screen === "PLAYER_TURN" || state.screen === "PROJECTILE" || state.screen === "EXPLOSION")) {
+    drawTurnTimerBar(marginX, barTop + 20, 110, 6);
+    ctx.font = "bold 11px monospace";
+    ctx.fillStyle = state.turnTimer <= 5 ? COLORS.hpRed : COLORS.white;
+    ctx.fillText(Math.ceil(state.turnTimer) + "с", marginX + 116, barTop + 19);
+  }
+
+  // center zone: wind gauge
+  const cx = VW / 2;
+  ctx.textAlign = "center";
+  ctx.font = "10px monospace";
+  ctx.fillStyle = "rgba(240,234,216,0.75)";
+  ctx.fillText("ВЕТЕР", cx, barTop + 2);
+  const gaugeW = 74, gaugeX = cx - gaugeW / 2, gaugeY = barTop + 16;
+  ctx.strokeStyle = "rgba(240,234,216,0.4)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(gaugeX + 0.5, gaugeY + 0.5, gaugeW, 6);
+  ctx.fillStyle = "rgba(240,234,216,0.15)";
+  ctx.fillRect(gaugeX, gaugeY, gaugeW, 6);
+  ctx.fillStyle = "rgba(240,234,216,0.5)";
+  ctx.fillRect(cx - 0.5, gaugeY - 1, 1, 8);
+  const windPct = clamp(state.wind, -1, 1);
+  const markerX = cx + windPct * (gaugeW / 2 - 3);
+  ctx.fillStyle = Math.abs(state.wind) < 0.05 ? COLORS.white : COLORS.fire1;
+  ctx.fillRect(markerX - 2, gaugeY - 2, 4, 10);
+
+  // right zone: weapon + hazard countdown
+  ctx.textAlign = "right";
+  ctx.font = "bold 14px monospace";
   const weaponName = state.turn === "player" ? state.playerWeapon : state.aiWeapon;
   const hasSuper = state.turn === "player" ? state.playerSuperGrenade : state.aiSuperGrenade;
-  let weaponLabel = weaponName === "bazooka" ? "БАЗУКА [1]" : "ГРАНАТА [2]";
-  if (hasSuper) weaponLabel += " +ТОМАТ";
-  ctx.fillText(weaponLabel, 620, 10);
+  const weaponLabel = (weaponName === "bazooka" ? "БАЗУКА [1]" : "ГРАНАТА [2]") + (hasSuper ? " +ТОМАТ" : "");
+  ctx.fillStyle = hasSuper ? COLORS.tomato : COLORS.white;
+  ctx.fillText(weaponLabel, VW - marginX, barTop + 4);
+  drawWeaponIcon(VW - marginX - ctx.measureText(weaponLabel).width - 12, barTop + 12, weaponName);
 
-  ctx.font = "12px monospace";
-  if (state.turn === "player" && (state.screen === "PLAYER_TURN" || state.screen === "PROJECTILE" || state.screen === "EXPLOSION")) {
-    ctx.fillStyle = state.turnTimer <= 5 ? COLORS.hpRed : COLORS.white;
-    ctx.fillText("ХОД: " + Math.ceil(state.turnTimer) + "с", 14, 30);
-  }
-  if (state.suddenDeath) {
-    ctx.textAlign = "center";
-    ctx.fillStyle = COLORS.hpRed;
-    ctx.fillText("ВНЕЗАПНАЯ СМЕРТЬ — ВОДА ПОДНИМАЕТСЯ!", CW / 2, 30);
-    ctx.textAlign = "left";
-  } else {
-    ctx.fillStyle = COLORS.white;
-    ctx.fillText("ДО ВОДЫ: " + Math.ceil(state.matchTimer) + "с", 700, 30);
-  }
+  ctx.font = "10px monospace";
+  const isLava = state.biome === "lava";
+  const hazardLabel = state.suddenDeath
+    ? (isLava ? "ЛАВА ПОДНИМАЕТСЯ!" : "ВОДА ПОДНИМАЕТСЯ!")
+    : "ДО " + (isLava ? "ЛАВЫ" : "ВОДЫ") + ": " + Math.ceil(state.matchTimer) + "с";
+  ctx.fillStyle = state.suddenDeath ? COLORS.hpRed : "rgba(240,234,216,0.8)";
+  ctx.fillText(hazardLabel, VW - marginX, barTop + 20);
+  drawHazardIcon(VW - marginX - ctx.measureText(hazardLabel).width - 12, barTop + 22, isLava);
 
   const shooter = getActiveWorm(state.turn);
   if (shooter && shooter.charging) {
-    const bw = 220, bh = 14, bx = (CW - bw) / 2, by = CH - 46;
+    const bw = 220, bh = 14, bx = (VW - bw) / 2, by = VH - 46;
     ctx.fillStyle = COLORS.hpBg;
     ctx.fillRect(bx, by, bw, bh);
     ctx.fillStyle = COLORS.fire1;
@@ -1350,56 +2241,96 @@ function drawHUD() {
 }
 
 function drawControlHints() {
+  const barY = VH - 26;
   ctx.fillStyle = "rgba(10,8,6,0.6)";
-  ctx.fillRect(0, CH - 20, CW, 20);
+  ctx.fillRect(0, barY, VW, 20);
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.font = "12px monospace";
   ctx.fillStyle = COLORS.white;
   ctx.fillText(
-    "←→ ДВИЖЕНИЕ   ↑↓ ПРИЦЕЛ   SHIFT ПРЫЖОК   SPACE ВЫСТРЕЛ   1/2 ОРУЖИЕ",
-    CW / 2, CH - 10
+    "←→ ДВИЖЕНИЕ   ↑↓ ПРИЦЕЛ   SHIFT ПРЫЖОК   SPACE ВЫСТРЕЛ   1/2 ОРУЖИЕ   M ЗВУК",
+    VW / 2, barY + 10
   );
+  drawSpeakerIcon(VW - 58, barY + 10, state.muted);
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
 }
 
+const DIFFICULTY_ORDER = [["1", "easy"], ["2", "veteran"], ["3", "armageddon"]];
+
+function drawDifficultyPicker(y) {
+  ctx.textAlign = "center";
+  ctx.font = "11px monospace";
+  ctx.fillStyle = "rgba(240,234,216,0.7)";
+  ctx.fillText("СЛОЖНОСТЬ ПРОТИВНИКА", VW / 2, y);
+
+  ctx.font = "bold 15px monospace";
+  const items = DIFFICULTY_ORDER.map(([key, level]) => ({
+    label: "[" + key + "] " + DIFFICULTY_PRESETS[level].label,
+    selected: state.difficulty === level,
+  }));
+  const gap = 26;
+  const widths = items.map(it => ctx.measureText(it.label).width);
+  const totalW = widths.reduce((a, b) => a + b, 0) + gap * (items.length - 1);
+  let x = VW / 2 - totalW / 2;
+  ctx.textAlign = "left";
+  items.forEach((it, i) => {
+    ctx.fillStyle = it.selected ? COLORS.fire1 : "rgba(240,234,216,0.65)";
+    ctx.fillText(it.label, x, y + 20);
+    x += widths[i] + gap;
+  });
+  ctx.textAlign = "center";
+}
+
 function drawMenu() {
   ctx.fillStyle = "rgba(10,10,20,0.82)";
-  ctx.fillRect(0, 0, CW, CH);
+  ctx.fillRect(0, 0, VW, VH);
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
   ctx.fillStyle = COLORS.white;
   ctx.font = "bold 42px monospace";
-  ctx.fillText("BULBA BATTLE", CW / 2, 150);
+  ctx.fillText("BULBA BATTLE", VW / 2, 120);
   ctx.font = "16px monospace";
-  ctx.fillText("8-БИТНАЯ БУЛЬБЯНАЯ ДУЭЛЬ", CW / 2, 200);
-  ctx.font = "bold 20px monospace";
-  ctx.fillStyle = COLORS.fire1;
-  ctx.fillText("ENTER — НАЧАТЬ БОЙ", CW / 2, 280);
-  ctx.font = "15px monospace";
+  ctx.fillStyle = "rgba(240,234,216,0.8)";
+  ctx.fillText("8-БИТНАЯ БУЛЬБЯНАЯ ДУЭЛЬ", VW / 2, 154);
+
+  const blink = Math.sin(waterTime * 4) > -0.3;
+  ctx.font = "bold 22px monospace";
+  ctx.fillStyle = blink ? COLORS.fire1 : "rgba(255,201,90,0.35)";
+  ctx.fillText("ENTER — НАЧАТЬ БОЙ", VW / 2, 202);
+
+  drawDifficultyPicker(248);
+
+  const panelW = 580, panelH = 108, panelX = VW / 2 - panelW / 2, panelY = 296;
+  ctx.fillStyle = "rgba(255,255,255,0.05)";
+  ctx.fillRect(panelX, panelY, panelW, panelH);
+  ctx.strokeStyle = "rgba(240,234,216,0.3)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(panelX + 0.5, panelY + 0.5, panelW - 1, panelH - 1);
+  ctx.font = "13px monospace";
   ctx.fillStyle = COLORS.white;
   const lines = [
-    "← → — ДВИЖЕНИЕ      SHIFT — ПРЫЖОК",
-    "↑ ↓ — УГОЛ ПРИЦЕЛА",
-    "SPACE (ДЕРЖАТЬ / ОТПУСТИТЬ) — СИЛА И ВЫСТРЕЛ",
-    "1 — БАЗУКА     2 — ГРАНАТА",
+    "← → ДВИЖЕНИЕ      ↑ ↓ ПРИЦЕЛ      SHIFT ПРЫЖОК",
+    "SPACE — ДЕРЖАТЬ, ЧТОБЫ НАБРАТЬ СИЛУ, ОТПУСТИТЬ ДЛЯ ВЫСТРЕЛА",
+    "1 / 2 — ВЫБОР ОРУЖИЯ          M — ЗВУК " + (state.muted ? "ВЫКЛ" : "ВКЛ"),
   ];
-  lines.forEach((line, i) => ctx.fillText(line, CW / 2, 350 + i * 28));
+  lines.forEach((line, i) => ctx.fillText(line, VW / 2, panelY + 32 + i * 30));
   ctx.textAlign = "left";
 }
 
 function drawGameOver() {
   ctx.fillStyle = "rgba(10,10,20,0.82)";
-  ctx.fillRect(0, 0, CW, CH);
+  ctx.fillRect(0, 0, VW, VH);
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
   ctx.fillStyle = state.playerWon ? COLORS.hpGreen : COLORS.hpRed;
   ctx.font = "bold 44px monospace";
-  ctx.fillText(state.playerWon ? "ПОБЕДА!" : "ПОРАЖЕНИЕ", CW / 2, 250);
+  ctx.fillText(state.playerWon ? "ПОБЕДА!" : "ПОРАЖЕНИЕ", VW / 2, 220);
   ctx.fillStyle = COLORS.white;
   ctx.font = "bold 20px monospace";
-  ctx.fillText("ENTER — ЕЩЁ РАЗ", CW / 2, 320);
+  ctx.fillText("ENTER — ЕЩЁ РАЗ", VW / 2, 280);
+  drawDifficultyPicker(315);
   ctx.textAlign = "left";
 }
 
@@ -1408,13 +2339,16 @@ function drawGameOver() {
 const BLOCKED_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space", "ShiftLeft", "ShiftRight"]);
 
 window.addEventListener("keydown", (e) => {
+  ensureAudio();
   if (BLOCKED_KEYS.has(e.code)) e.preventDefault();
   if (e.code === "Enter") handleEnter();
   if (e.code === "Space" && !e.repeat) handleSpaceDown();
   if (!e.repeat) {
-    if (e.code === "Digit1") selectWeapon("bazooka");
-    if (e.code === "Digit2") selectWeapon("grenade");
+    if (e.code === "Digit1") { selectWeapon("bazooka"); selectDifficulty("easy"); }
+    if (e.code === "Digit2") { selectWeapon("grenade"); selectDifficulty("veteran"); }
+    if (e.code === "Digit3") selectDifficulty("armageddon");
     if (e.code === "ShiftLeft" || e.code === "ShiftRight") handleJump();
+    if (e.code === "KeyM") toggleMute();
   }
   keysDown.add(e.code);
 });
@@ -1430,9 +2364,10 @@ window.addEventListener("blur", () => keysDown.clear());
 // ===== MAIN LOOP =====
 
 function update(dt) {
-  if (state.screen === "MENU") { updateExplosionEffects(dt); updateFloaters(dt); return; }
+  if (state.screen === "MENU") { updateExplosionEffects(dt); updateFloaters(dt); updateCamera(dt); updateMusic(dt); return; }
   for (const w of worms) updateWormPhysics(w, dt);
   switch (state.screen) {
+    case "INTRO": updateIntroPan(dt); break;
     case "PLAYER_TURN": updatePlayerTurn(dt); break;
     case "PROJECTILE": updateProjectiles(dt); break;
     case "EXPLOSION": updateExplosionState(); break;
@@ -1445,27 +2380,36 @@ function update(dt) {
   updateBanner(dt);
   updateCrates(dt);
   updateMines(dt);
+  updateBarrels(dt);
   updateTurnTimer(dt);
   updateWaterAnim(dt);
   handlePlayerRetreatMovement(dt);
+  updateCamera(dt);
+  updateMusic(dt);
   if (state.screen !== "GAME_OVER") {
     updateMatchTimer(dt);
     updateWaterDamage();
+    updateFireZones(dt);
   }
 }
 
 function render() {
   drawSky();
+  ctx.save();
+  ctx.translate(-Math.round(camera.x), 0);
   ctx.drawImage(terrainCanvas, 0, 0);
   if (state.screen !== "MENU") {
     drawMines();
+    drawBarrels();
     drawCrates();
     for (const w of worms) if (w.alive) drawWorm(w);
     for (const p of projectiles) drawProjectile(p);
+    drawFireZones();
   }
   drawExplosions();
   if (state.screen !== "MENU") drawWater();
   drawFloaters();
+  ctx.restore();
   if (state.screen !== "MENU" && state.screen !== "GAME_OVER") drawBanner();
   drawHUD();
   if (state.screen === "MENU") drawMenu();
