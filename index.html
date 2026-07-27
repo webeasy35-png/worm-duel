@@ -615,7 +615,6 @@ const state = {
   introTimer: 0,
   biome: "water",
   difficulty: "veteran",
-  aiLastErrorPx: null,
   muted: false,
 };
 
@@ -628,32 +627,29 @@ const DIFFICULTY_PRESETS = {
     randomTargetChance: 0.35,
     superClusterThreshold: 3,
     reactionPause: [1.1, 1.6],
-    correction: 0,
     finishHpThreshold: 25,
     weaponSkill: 0.55,
   },
   veteran: {
     label: "БЫВАЛЫЙ",
-    angleNoiseDeg: 5,
-    powerNoise: 0.06,
-    killPriorityChance: 0.78,
-    randomTargetChance: 0.18,
-    superClusterThreshold: 2,
-    reactionPause: [0.7, 1.1],
-    correction: 0.6,
-    finishHpThreshold: 34,
-    weaponSkill: 0.75,
-  },
-  armageddon: {
-    label: "АРМАГЕДОН",
     angleNoiseDeg: 0.4,
     powerNoise: 0.004,
     killPriorityChance: 0.97,
     randomTargetChance: 0.03,
     superClusterThreshold: 2,
     reactionPause: [0.2, 0.3],
-    correction: 1,
     finishHpThreshold: 45,
+    weaponSkill: 1,
+  },
+  armageddon: {
+    label: "АРМАГЕДОН",
+    angleNoiseDeg: 0.1,
+    powerNoise: 0.001,
+    killPriorityChance: 1,
+    randomTargetChance: 0,
+    superClusterThreshold: 2,
+    reactionPause: [0.12, 0.2],
+    finishHpThreshold: 60,
     weaponSkill: 1,
   },
 };
@@ -1516,9 +1512,6 @@ function findWormNear(x, y, r) {
 }
 
 function explode(x, y, radius, damage, firedBy) {
-  if (firedBy && firedBy.ownerTeam === "ai" && firedBy.aiTargetX !== undefined) {
-    state.aiLastErrorPx = x - firedBy.aiTargetX;
-  }
   playExplosionSound(radius);
   spawnExplosionEffect(x, y, radius);
   digCrater(x, y, radius);
@@ -1554,7 +1547,6 @@ function spawnProjectile(worm, type, power) {
     type, x: originX, y: originY,
     vx: dirX * speed, vy: dirY * speed,
     ownerTeam: worm.team, bounces: 0, fuse: cfg.fuse || 0,
-    aiTargetX: worm.team === "ai" ? worm.aiIntendedTargetX : undefined,
   });
   state.screen = "PROJECTILE";
 }
@@ -1878,10 +1870,22 @@ function nearestOf(list, aiWorm) {
   return list.reduce((best, w) => (Math.abs(w.x - aiWorm.x) < Math.abs(best.x - aiWorm.x) ? w : best));
 }
 
+// Грубая оценка максимальной дальности оружия (плоская земля, без ветра) —
+// используется только как фильтр "вообще может долететь", не для точного прицела.
+function weaponMaxRange(weaponType) {
+  const cfg = WEAPONS[weaponType];
+  const baseAngleDeg = isGrenadeLike(weaponType) ? 55 : 47;
+  return (cfg.maxSpeed * cfg.maxSpeed * Math.sin(2 * baseAngleDeg * Math.PI / 180)) / GRAVITY;
+}
+
 function pickPlayerTarget(aiWorm) {
   const preset = aiDifficulty();
   const alive = teamWorms("player").filter(w => w.alive);
-  const finishable = alive.filter(w => w.hp <= preset.finishHpThreshold);
+  // Добивать раненого приоритетно, но только если до него реально можно дострелить —
+  // иначе ИИ игнорировал близкого целого противника ради дальнего почти мёртвого,
+  // до которого всё равно не долетал ни один выстрел.
+  const reachRange = Math.max(weaponMaxRange("bazooka"), weaponMaxRange("grenade")) * 1.15;
+  const finishable = alive.filter(w => w.hp <= preset.finishHpThreshold && Math.abs(w.x - aiWorm.x) <= reachRange);
   if (finishable.length > 0 && Math.random() < preset.killPriorityChance) return nearestOf(finishable, aiWorm);
   if (Math.random() < preset.randomTargetChance) return alive[Math.floor(Math.random() * alive.length)];
   return nearestOf(alive, aiWorm);
@@ -1918,21 +1922,48 @@ function lineOfSightBlocked(worm, target) {
 function estimateAiAim(worm, target, weaponType) {
   const cfg = WEAPONS[weaponType];
   const baseAngleDeg = isGrenadeLike(weaponType) ? 55 : 47;
-  const angle = -baseAngleDeg * Math.PI / 180;
   const facing = target.x >= worm.x ? 1 : -1;
+
+  // Rough pre-pass at the default steep arc, just to get a first distance estimate.
+  const a0 = -baseAngleDeg * Math.PI / 180;
+  const ox0 = worm.x + Math.cos(a0) * facing * GUN_LEN;
+  const dist0 = Math.abs(target.x - ox0);
+  // At minSpeed, the default steep arc already covers more ground than dist0 — power
+  // is clamped at 0.15, so nothing below minSpeed exists to shrink the shot further,
+  // and it systematically overshoots close targets. Flatten the arc until minSpeed's
+  // own minimum range roughly matches the target distance, so power has room to tune
+  // an actually-short shot instead of always firing a minimum-power long one.
+  let angleDeg = baseAngleDeg;
+  const minRangeAtBase = (cfg.minSpeed * cfg.minSpeed * Math.sin(2 * baseAngleDeg * Math.PI / 180)) / GRAVITY;
+  if (dist0 < minRangeAtBase) {
+    const sinTwoTheta = clamp((dist0 * GRAVITY) / (cfg.minSpeed * cfg.minSpeed), 0.06, 1);
+    angleDeg = clamp((Math.asin(sinTwoTheta) * 180 / Math.PI) / 2, 8, baseAngleDeg);
+  }
+  const angle = -angleDeg * Math.PI / 180;
   const originX = worm.x + Math.cos(angle) * facing * GUN_LEN;
   const originY = (worm.y - 24) + Math.sin(angle) * GUN_LEN;
-  const dist = Math.abs(target.x - originX);
+  const rawDist = Math.abs(target.x - originX);
   const dyRel = (target.y - 14) - originY;
   const cos = Math.cos(angle), tan = Math.sin(angle) / cos;
-  const denom = cos * cos * (dyRel - dist * tan);
-  let speed;
-  if (denom > 1) {
-    speed = Math.sqrt((0.5 * GRAVITY * dist * dist) / denom);
-  } else {
-    speed = cfg.maxSpeed * 0.75;
+  // Ветер толкает снаряд в полёте (см. updateProjectiles: p.vx += wind*WIND_STRENGTH*dt),
+  // но сама баллистическая формула ниже его не знает. Два прохода: первый прикидывает
+  // время полёта без ветра, второй компенсирует снос за это время, подправляя
+  // "эффективную" дистанцию, под которую решается баллистика.
+  let dist = rawDist;
+  let speed = cfg.maxSpeed * 0.75;
+  for (let pass = 0; pass < 2; pass++) {
+    const denom = cos * cos * (dyRel - dist * tan);
+    if (denom > 1) {
+      speed = Math.sqrt((0.5 * GRAVITY * dist * dist) / denom);
+    } else {
+      speed = cfg.maxSpeed * 0.75;
+    }
+    speed = clamp(speed, cfg.minSpeed, cfg.maxSpeed * 1.05);
+    const vx0 = Math.abs(cos * speed);
+    const flightTime = vx0 > 1 ? rawDist / vx0 : 0;
+    const windDriftAlongPath = facing * 0.5 * state.wind * WIND_STRENGTH * flightTime * flightTime;
+    dist = clamp(rawDist - windDriftAlongPath, rawDist * 0.4, rawDist * 1.6);
   }
-  speed = clamp(speed, cfg.minSpeed, cfg.maxSpeed * 1.05);
   const power = clamp((speed - cfg.minSpeed) / (cfg.maxSpeed - cfg.minSpeed), 0.15, 1);
   return { angle, power };
 }
@@ -1950,6 +1981,19 @@ function updateAiTurnPause(dt) {
   }
 }
 
+// Считает угол/мощность под текущую позицию червя и применяет шум сложности.
+// Вынесено отдельно, чтобы пере-прицелиться после AI_MOVING — иначе выстрел летит
+// туда, где цель была ДО того, как ИИ сам сдвинулся с места.
+function aimAtTarget(worm, target, weaponType, preset) {
+  const aim = estimateAiAim(worm, target, weaponType);
+  const angleNoise = preset.angleNoiseDeg * Math.PI / 180;
+  const angle = aim.angle + (Math.random() * 2 - 1) * angleNoise;
+  const power = clamp(aim.power + (Math.random() * 2 - 1) * preset.powerNoise, 0.15, 1);
+  worm.aimAngle = clamp(angle, -MAX_AIM, MAX_AIM);
+  worm.targetPower = power;
+  worm.power = 0;
+}
+
 function prepareAiShot() {
   const preset = aiDifficulty();
   const worm = getActiveWorm("ai");
@@ -1957,7 +2001,6 @@ function prepareAiShot() {
   const dx = target.x - worm.x;
   worm.facing = dx >= 0 ? 1 : -1;
   worm.shootFacing = worm.facing;
-  const dist = Math.abs(dx);
 
   const blocked = lineOfSightBlocked(worm, target);
   const preferGrenade = blocked || Math.abs(worm.y - target.y) > 90;
@@ -1971,19 +2014,8 @@ function prepareAiShot() {
     worm.aiWantsSuper = clusterCount >= preset.superClusterThreshold;
   }
 
-  let aimTargetX = target.x;
-  if (preset.correction > 0 && state.aiLastErrorPx !== null) {
-    aimTargetX -= state.aiLastErrorPx * preset.correction;
-  }
-  worm.aiIntendedTargetX = target.x;
-
-  const aim = estimateAiAim(worm, { x: aimTargetX, y: target.y }, worm.aiWantsSuper ? "supergrenade" : state.aiWeapon);
-  const angleNoise = preset.angleNoiseDeg * Math.PI / 180;
-  let angle = aim.angle + (Math.random() * 2 - 1) * angleNoise;
-  let power = clamp(aim.power + (Math.random() * 2 - 1) * preset.powerNoise, 0.15, 1);
-  worm.aimAngle = clamp(angle, -MAX_AIM, MAX_AIM);
-  worm.targetPower = power;
-  worm.power = 0;
+  worm.aiAimTarget = target;
+  aimAtTarget(worm, target, worm.aiWantsSuper ? "supergrenade" : state.aiWeapon, preset);
 
   const teammate = teamWorms("ai").find(w => w !== worm && w.alive);
   const bunched = teammate && Math.abs(worm.x - teammate.x) < 70;
@@ -1992,9 +2024,21 @@ function prepareAiShot() {
   const curCol = clamp(Math.round(worm.x), 0, WW - 1);
   const nearEdge = Math.abs(terrain.heights[lookAheadCol] - terrain.heights[curCol]) > FALL_TRIGGER;
 
+  const bestRange = Math.max(weaponMaxRange("bazooka"), weaponMaxRange("grenade"));
+  const outOfRange = Math.abs(target.x - worm.x) > bestRange * 0.92;
+
   state.aiMoveDir = 0;
   state.aiMoveTimer = 0;
-  if (bunched) {
+  if (outOfRange) {
+    // Приоритет выше, чем у "скучились"/"край обрыва" — без сближения выстрел
+    // заведомо не долетит, какой бы точной ни была баллистика.
+    const dir = worm.facing;
+    const dist = 0.7 * WALK_SPEED;
+    if (pathIsSafe(worm, dir, dist)) {
+      state.aiMoveDir = dir;
+      state.aiMoveTimer = 0.6 + Math.random() * 0.4;
+    }
+  } else if (bunched) {
     const dir = worm.x < teammate.x ? -1 : 1;
     const dist = 0.6 * WALK_SPEED;
     if (pathIsSafe(worm, dir, dist)) {
@@ -2024,6 +2068,10 @@ function updateAiMoving(dt) {
   if (state.aiMoveTimer <= 0) {
     worm.animState = "idle";
     worm.facing = worm.shootFacing;
+    if (worm.aiAimTarget && worm.aiAimTarget.alive) {
+      const weaponType = worm.aiWantsSuper ? "supergrenade" : state.aiWeapon;
+      aimAtTarget(worm, worm.aiAimTarget, weaponType, aiDifficulty());
+    }
     worm.charging = true;
     state.screen = "AI_CHARGING";
   }
@@ -2072,7 +2120,6 @@ function startMatch() {
   state.banner = null;
   state.introTimer = 0;
   state.biome = Math.random() < 0.5 ? "lava" : "water";
-  state.aiLastErrorPx = null;
   state.screen = "INTRO";
   announce("ОБЗОР ПОЛЯ БОЯ", COLORS.white);
 }
