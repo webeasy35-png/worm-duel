@@ -23,9 +23,12 @@
     --u: clamp(40px, 12.5vh, 64px);   /* базовый размер кнопки */
     --ink: #f0ead8;
     --gold: #e8c98a;
-    --btn-bg: rgba(18, 14, 10, 0.44);
-    --btn-bg-on: rgba(232, 201, 138, 0.30);
-    --btn-br: rgba(232, 201, 138, 0.45);
+    /* Игра занимает почти весь экран, поэтому кнопки держим полупрозрачными:
+       под ними может стоять червь у края мира. Контраст текста добираем
+       тенью, а не плотностью фона. */
+    --btn-bg: rgba(18, 14, 10, 0.30);
+    --btn-bg-on: rgba(232, 201, 138, 0.34);
+    --btn-br: rgba(232, 201, 138, 0.5);
     --pad-l: env(safe-area-inset-left, 0px);
     --pad-r: env(safe-area-inset-right, 0px);
     --pad-b: env(safe-area-inset-bottom, 0px);
@@ -70,11 +73,14 @@
     height: 600px;
   }
   #frame {
+    /* Внутренний layout-viewport с запасом: канвас в мобильном режиме 1260px,
+       плюс ТВ-рамка — итого ~1372x746. Если сделать iframe меньше содержимого,
+       игру обрежет по краям ещё до того, как мы её отмасштабируем. */
     position: absolute;
     top: 0;
     left: 0;
-    width: 1100px;   /* фиксированный внутренний layout-viewport */
-    height: 800px;
+    width: 1600px;
+    height: 900px;
     border: 0;
     display: block;
     transform-origin: 0 0;
@@ -103,6 +109,7 @@
     font-weight: bold;
     line-height: 1;
     text-align: center;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 0 4px rgba(0, 0, 0, 0.7);
     touch-action: none;
     -webkit-user-select: none;
     user-select: none;
@@ -164,12 +171,15 @@
     background: rgba(255, 154, 60, 0.42);
   }
 
-  /* Мелкие кнопки — колонкой в правом чёрном поле, чтобы не накрывать
-     верхний HUD игры (ветер и счётчик опасности). */
+  /* Мелкие кнопки — колонкой у правого края, по вертикали в середине.
+     Игра теперь занимает почти весь экран, поэтому сверху их держать нельзя:
+     там верхняя панель HUD (ход, ветер, счётчик опасности), а снизу — ОГОНЬ.
+     Середина правого края свободна на обоих экранах. */
   #tools {
     position: absolute;
     right: calc(4px + var(--pad-r));
-    top: calc(4px + var(--pad-t));
+    top: 50%;
+    transform: translateY(-50%);
     display: flex;
     flex-direction: column;
     gap: 5px;
