@@ -10,9 +10,23 @@
     background:
       radial-gradient(ellipse at 50% 30%, #2a241c 0%, #0a0806 75%);
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     font-family: monospace;
+  }
+  .bug-report {
+    margin-top: 16px;
+    color: rgba(240,234,216,0.55);
+    font-size: 13px;
+    text-align: center;
+  }
+  .bug-report a {
+    color: #ffd25a;
+    text-decoration: none;
+  }
+  .bug-report a:hover {
+    text-decoration: underline;
   }
   .tv-frame {
     position: relative;
@@ -169,6 +183,7 @@
     </div>
     <div class="tv-legs"><div class="leg"></div><div class="leg"></div></div>
   </div>
+  <div class="bug-report">Встретил баг? Пожалуйста, напиши в телеграм: <a href="https://t.me/kapitanmajor" target="_blank" rel="noopener">@kapitanmajor</a></div>
 
 <script>
 "use strict";
@@ -203,6 +218,14 @@ const COLORS = {
   crateHealBox: "#f0ece0",
   crateHealCross: "#d8302a",
   chute: "#d8c8a8",
+  jetpack: "#8a96a0",
+  jetpackDark: "#5a6470",
+  bat: "#c8a068",
+  batGrip: "#5a3c1a",
+  beetle: "#e8a020",
+  beetleStripe: "#20180a",
+  dynamite: "#c23a3a",
+  dynamiteLabel: "#f0ead8",
 };
 
 const GRAVITY = 780;
@@ -227,6 +250,8 @@ const WEAPONS = {
   bazooka: { minSpeed: 260, maxSpeed: 620, radius: 34, damage: 34 },
   grenade: { minSpeed: 220, maxSpeed: 480, radius: 40, damage: 30, fuse: 2.6 },
   supergrenade: { minSpeed: 220, maxSpeed: 480, radius: 62, damage: 55, fuse: 2.6 },
+  beetle_flying: { minSpeed: 200, maxSpeed: 380, radius: 45, damage: 32, fuse: 6 },
+  beetle_crawl: { minSpeed: 220, maxSpeed: 420, radius: 42, damage: 30 },
 };
 
 function isGrenadeLike(type) { return type === "grenade" || type === "supergrenade"; }
@@ -474,6 +499,21 @@ function playJumpSound() {
   playBlip({ freq: 260, freqEnd: 520, duration: 0.14, type: "square", volume: 0.2 });
 }
 
+function playJetpackSound() {
+  ensureAudio();
+  playNoiseBurst({ duration: 0.3, volume: 0.16, startFreq: 2600, endFreq: 900 });
+}
+
+function playBatSwingSound() {
+  ensureAudio();
+  playNoiseBurst({ duration: 0.12, volume: 0.2, startFreq: 3400, endFreq: 1400 });
+}
+
+function playDynamitePlantSound() {
+  ensureAudio();
+  playBlip({ freq: 180, freqEnd: 90, duration: 0.16, type: "square", volume: 0.22 });
+}
+
 function playHitSound() {
   ensureAudio();
   playBlip({ freq: 520, freqEnd: 180, duration: 0.1, type: "square", volume: 0.22 });
@@ -590,6 +630,7 @@ let crates = [];
 let mines = [];
 let barrels = [];
 let fireZones = [];
+let dynamites = [];
 let waterTime = 0;
 let camera = { x: Math.max(0, (WW - VW) / 2) };
 
@@ -600,6 +641,7 @@ const state = {
   activeIndex: { player: 0, ai: 0 },
   playerWeapon: "bazooka",
   aiWeapon: "bazooka",
+  jetpackFuel: 1,
   aiPauseTimer: 0,
   aiMoveDir: 0,
   aiMoveTimer: 0,
@@ -902,6 +944,23 @@ function drawGrenadeShape(hasSuper) {
   }
 }
 
+function drawBeetleShape() {
+  ctx.fillStyle = COLORS.outline;
+  ctx.beginPath();
+  ctx.ellipse(11, 1, 8, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = COLORS.beetle;
+  ctx.beginPath();
+  ctx.ellipse(11, 1, 6.5, 4.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = COLORS.beetleStripe;
+  ctx.fillRect(8, -2, 2, 7);
+  ctx.fillRect(13, -2, 2, 7);
+  ctx.fillStyle = COLORS.outline;
+  ctx.fillRect(3, -3, 2, 3);
+  ctx.fillRect(3, 2, 2, 3);
+}
+
 function drawWeaponInHand(worm) {
   const weaponType = worm.team === "player" ? state.playerWeapon : state.aiWeapon;
   const hasSuper = worm.team === "player" ? state.playerSuperGrenade : state.aiSuperGrenade;
@@ -911,8 +970,67 @@ function drawWeaponInHand(worm) {
   ctx.translate(worm.x, worm.y - 24);
   ctx.rotate(drawAngle);
   if (weaponType === "grenade") drawGrenadeShape(hasSuper);
+  else if (weaponType === "beetle_flying" || weaponType === "beetle_crawl") drawBeetleShape();
   else drawBazookaShape(hasSuper);
   ctx.restore();
+}
+
+// Бита не целится под углом как оружие с дугой — держится в почти
+// постоянной позе, короткий взмах отыгрывается на время BAT_SWING_DURATION.
+function drawBatInHand(worm) {
+  const swinging = worm.batSwingTimer > 0;
+  const angle = (swinging ? -0.95 : 0.35) * worm.facing;
+  ctx.save();
+  ctx.translate(worm.x + worm.facing * 6, worm.y - 22);
+  ctx.rotate(angle);
+  ctx.fillStyle = COLORS.outline;
+  ctx.fillRect(-3, -4, 24, 8);
+  ctx.fillStyle = COLORS.bat;
+  ctx.fillRect(-2, -3, 22, 6);
+  ctx.fillStyle = COLORS.batGrip;
+  ctx.fillRect(-2, -3, 5, 6);
+  ctx.restore();
+}
+
+function drawDynamiteInHand(worm) {
+  const hx = worm.x + worm.facing * 7;
+  const hy = worm.y - 20;
+  ctx.fillStyle = COLORS.outline;
+  ctx.fillRect(hx - 3, hy - 8, 6, 12);
+  ctx.fillStyle = COLORS.dynamite;
+  ctx.fillRect(hx - 2, hy - 7, 4, 10);
+  ctx.fillStyle = COLORS.fuse;
+  ctx.fillRect(hx - 1, hy - 10, 2, 3);
+}
+
+function drawJetpack(worm, spriteH) {
+  const bx = worm.x - worm.facing * 9;
+  const by = worm.y - 30;
+  ctx.fillStyle = COLORS.outline;
+  ctx.fillRect(bx - 6, by - 10, 12, 18);
+  ctx.fillStyle = COLORS.jetpack;
+  ctx.fillRect(bx - 5, by - 9, 10, 16);
+  ctx.fillStyle = COLORS.jetpackDark;
+  ctx.fillRect(bx - 5, by - 9, 3, 16);
+  if (worm.jetpackThrusting) {
+    ctx.fillStyle = COLORS.fire1;
+    ctx.fillRect(bx - 3, by + 8, 6, 5 + Math.random() * 4);
+    ctx.fillStyle = COLORS.fire2;
+    ctx.fillRect(bx - 2, by + 11, 4, 3 + Math.random() * 3);
+  }
+  if (worm.state === "falling") {
+    const pct = Math.round(state.jetpackFuel * 100) + "%";
+    const py = worm.y - spriteH - 34;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.font = "bold 12px monospace";
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillText(pct, worm.x + 1, py + 1);
+    ctx.fillStyle = state.jetpackFuel < 0.25 ? COLORS.hpRed : COLORS.fire1;
+    ctx.fillText(pct, worm.x, py);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+  }
 }
 
 function drawHpBar(worm, y) {
@@ -959,14 +1077,63 @@ function drawWorm(worm) {
   const accPattern = ACCESSORY_PATTERNS[worm.accessoryIdx];
   drawSprite(accPattern, worm.x - spriteW / 2, worm.y - spriteH, scale, { A: ACCESSORY_COLORS[worm.accessoryIdx] }, flip);
   if (isActiveShooter(worm)) {
-    drawWeaponInHand(worm);
-    drawAimLine(worm);
+    const weaponType = worm.team === "player" ? state.playerWeapon : state.aiWeapon;
+    if (weaponType === "jetpack") {
+      drawJetpack(worm, spriteH);
+    } else if (weaponType === "bat") {
+      drawBatInHand(worm);
+    } else if (weaponType === "dynamite") {
+      drawDynamiteInHand(worm);
+    } else {
+      drawWeaponInHand(worm);
+      drawAimLine(worm);
+    }
   }
   drawHpBar(worm, worm.y - spriteH - 10);
   drawNameAndHp(worm, worm.y - spriteH - 13);
 }
 
 function drawProjectile(p) {
+  if (p.type === "beetle_flying") {
+    const flap = Math.floor(waterTime * 12) % 2 === 0;
+    ctx.fillStyle = COLORS.outline;
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y, 6, 4.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLORS.beetle;
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y, 4.5, 3.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLORS.beetleStripe;
+    ctx.fillRect(p.x - 1, p.y - 3, 2, 6);
+    ctx.fillStyle = "rgba(240,234,216,0.6)";
+    const wingY = flap ? p.y - 6 : p.y - 4;
+    ctx.fillRect(p.x - 7, wingY, 5, 2);
+    ctx.fillRect(p.x + 2, wingY, 5, 2);
+    return;
+  }
+  if (p.type === "beetle_crawl") {
+    const step = Math.floor(waterTime * 10) % 2 === 0;
+    ctx.fillStyle = COLORS.outline;
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y - 3, 6, 4.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLORS.beetle;
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y - 3, 4.5, 3.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLORS.beetleStripe;
+    ctx.fillRect(p.x - 1, p.y - 6, 2, 6);
+    ctx.fillStyle = COLORS.outline;
+    const legDx = step ? 1 : -1;
+    ctx.fillRect(p.x - 6 + legDx, p.y, 3, 2);
+    ctx.fillRect(p.x + 3 - legDx, p.y, 3, 2);
+    if (p.crawlDelay <= 0 && Math.floor(p.fuse * 6) % 2 === 0) {
+      ctx.fillStyle = COLORS.fuse;
+      ctx.fillRect(p.x - 1, p.y - 10, 2, 2);
+    }
+    return;
+  }
   ctx.fillStyle = COLORS.outline;
   ctx.fillRect(p.x - 3, p.y - 3, 6, 6);
   if (p.type === "supergrenade") {
@@ -1551,7 +1718,22 @@ function spawnProjectile(worm, type, power) {
   state.screen = "PROJECTILE";
 }
 
+const BEETLE_CRAWL_SPEED = 90;
+const BEETLE_CRAWL_DELAY = 1.4; // раскачивается на месте, ПРЕЖДЕ чем таймер вообще начнёт тикать
+const BEETLE_CRAWL_FUSE = 4;
+
 function handleTerrainHit(p, x, y) {
+  if (p.type === "beetle_crawl" && !p.crawling) {
+    p.crawling = true;
+    p.crawlDir = p.vx >= 0 ? 1 : -1;
+    p.crawlDelay = BEETLE_CRAWL_DELAY;
+    p.fuse = BEETLE_CRAWL_FUSE;
+    p.x = x;
+    p.y = y - 2;
+    p.vx = 0;
+    p.vy = 0;
+    return false;
+  }
   if (isGrenadeLike(p.type) && p.bounces < 1) {
     p.bounces++;
     p.x = x;
@@ -1565,10 +1747,51 @@ function handleTerrainHit(p, x, y) {
   return true;
 }
 
+// Живёт своей жизнью уже после приземления: ждёт BEETLE_CRAWL_DELAY (таймер
+// взрыва ещё не тикает — как в Worms, сначала просто ползёт), потом тикает
+// BEETLE_CRAWL_FUSE до автоподрыва; тычется в стены/обрывы — разворачивается;
+// врезался в червя — взрывается сразу, не дожидаясь таймера.
+function updateCrawlingBeetle(p, dt) {
+  if (findWormNear(p.x, p.y - 6, WORM_HIT_RADIUS)) return true;
+  if (p.crawlDelay > 0) {
+    p.crawlDelay -= dt;
+  } else {
+    p.fuse -= dt;
+    if (p.fuse <= 0) return true;
+  }
+  const col = clamp(Math.round(p.x), 0, WW - 1);
+  const nextX = clamp(p.x + p.crawlDir * BEETLE_CRAWL_SPEED * dt, 10, WW - 10);
+  const nextCol = clamp(Math.round(nextX), 0, WW - 1);
+  const curH = terrain.heights[col];
+  const nextH = terrain.heights[nextCol];
+  if (Math.abs(nextH - curH) <= MAX_CLIMB) {
+    p.x = nextX;
+    p.y = nextH;
+  } else {
+    p.crawlDir *= -1;
+  }
+  return false;
+}
+
+const BEETLE_STEER_ACCEL = 500;
+const BEETLE_LIFT_ACCEL = 700;
+const BEETLE_MAX_SPEED = 380;
+
 function updateProjectiles(dt) {
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i];
-    if (isGrenadeLike(p.type)) {
+    if (p.crawling) {
+      if (updateCrawlingBeetle(p, dt)) {
+        const cfg = WEAPONS[p.type];
+        explode(p.x, p.y, cfg.radius, cfg.damage, p);
+        projectiles.splice(i, 1);
+      }
+      continue;
+    }
+    // фитиль — общий предохранитель для всего с таймером (граната/супер-граната
+    // отскакивают и взрываются по нему, летающий жук не отскакивает, но тоже
+    // самоуничтожается, если не подорвался раньше об рельеф/червя)
+    if (p.fuse > 0) {
       p.fuse -= dt;
       if (p.fuse <= 0) {
         const cfg = WEAPONS[p.type];
@@ -1576,6 +1799,13 @@ function updateProjectiles(dt) {
         projectiles.splice(i, 1);
         continue;
       }
+    }
+    if (p.type === "beetle_flying" && p.ownerTeam === "player") {
+      if (keysDown.has("ArrowLeft")) p.vx -= BEETLE_STEER_ACCEL * dt;
+      if (keysDown.has("ArrowRight")) p.vx += BEETLE_STEER_ACCEL * dt;
+      if (keysDown.has("ArrowUp")) p.vy -= BEETLE_LIFT_ACCEL * dt;
+      p.vx = clamp(p.vx, -BEETLE_MAX_SPEED, BEETLE_MAX_SPEED);
+      p.vy = clamp(p.vy, -BEETLE_MAX_SPEED, BEETLE_MAX_SPEED);
     }
     p.vx += state.wind * WIND_STRENGTH * dt;
     p.vy += GRAVITY * dt;
@@ -1633,6 +1863,9 @@ function handlePlayerRetreatMovement(dt) {
   if (state.turn !== "player") return;
   if (state.screen !== "PROJECTILE" && state.screen !== "EXPLOSION") return;
   if (state.turnTimer <= 0) return;
+  // пока свой летающий жук в воздухе, стрелки управляют им (см. updateProjectiles),
+  // а не отходом червя — иначе конфликт за одни и те же клавиши
+  if (projectiles.some(p => p.type === "beetle_flying" && p.ownerTeam === "player")) return;
   const worm = getActiveWorm("player");
   if (!worm || !worm.alive || worm.state === "falling") return;
   if (keysDown.has("ArrowLeft")) { tryMove(worm, -1, dt); worm.animState = "walk"; worm.animTimer += dt; }
@@ -1785,6 +2018,7 @@ function resolveAfterExplosion() {
   if (state.turn === "player") {
     state.wind = Math.random() * 2 - 1;
     state.turnTimer = TURN_TIME_LIMIT;
+    state.jetpackFuel = 1;
     state.screen = "PLAYER_TURN";
     announce("ХОД: " + getActiveWorm("player").name, COLORS.fire1);
   } else {
@@ -1796,7 +2030,15 @@ function resolveAfterExplosion() {
 }
 
 function selectWeapon(type) {
-  if (state.screen === "PLAYER_TURN") state.playerWeapon = type;
+  if (state.screen !== "PLAYER_TURN") return;
+  state.playerWeapon = type;
+  // ни у бомжранца, ни у биты нет заряда выстрела — если игрок переключился
+  // на них с базуки/гранаты посреди набора силы, сбросить набор, иначе при
+  // отпускании Space ударит по несуществующему WEAPONS["bat"/"jetpack"].
+  if (type === "jetpack" || type === "bat" || type === "dynamite") {
+    const worm = getActiveWorm("player");
+    if (worm) { worm.charging = false; worm.power = 0; }
+  }
 }
 
 function selectDifficulty(level) {
@@ -1804,28 +2046,148 @@ function selectDifficulty(level) {
 }
 
 const AIR_MOVE_SPEED = 120;
+const JETPACK_THRUST_ACCEL = 1600;
+const JETPACK_MAX_VY = -260; // потолок скорости подъёма — иначе тяга без ограничения разгоняет червя до бесконечности
+const JETPACK_FUEL_DRAIN = 0.6; // полный бак ~1.7с непрерывной тяги
+const BAT_SWING_DURATION = 0.22;
+const BAT_RANGE = 62;
+const BAT_DAMAGE = 20;
+const BAT_KNOCKBACK_DIST = 55;
+const BAT_KNOCKBACK_VY = -230;
 
 function tryAirMove(worm, dir, dt) {
   worm.x = clamp(worm.x + dir * AIR_MOVE_SPEED * dt, 10, WW - 10);
   worm.facing = dir;
 }
 
+// Ищет живого червя впереди атакующего (не позади) в радиусе удара биты.
+function findBatTarget(worm) {
+  const px = worm.x + worm.facing * 10;
+  const py = worm.y - 14;
+  let best = null, bestD = BAT_RANGE;
+  for (const w of worms) {
+    if (w === worm || !w.alive) continue;
+    const wy = w.y - 14;
+    const d = Math.hypot(w.x - px, wy - py);
+    const inFront = (w.x - worm.x) * worm.facing > -10;
+    if (d < bestD && inFront) { best = w; bestD = d; }
+  }
+  return best;
+}
+
+// Замах биты отыгрывает отдельным коротким окном (BAT_SWING_DURATION), удар
+// прикладывается по его истечении — см. вызов в updatePlayerTurn.
+function resolveBatSwing(worm) {
+  const target = findBatTarget(worm);
+  if (target) {
+    applyDamage(target, BAT_DAMAGE);
+    target.x = clamp(target.x + worm.facing * BAT_KNOCKBACK_DIST, 10, WW - 10);
+    target.vy = BAT_KNOCKBACK_VY;
+    target.state = "falling";
+    announce(worm.name + ": УДАР БИТОЙ!", worm.team === "player" ? COLORS.fire1 : COLORS.hpRed);
+  }
+  state.turnTimer = RETREAT_TIME;
+  state.screen = "EXPLOSION";
+}
+
+const DYNAMITE_FUSE = RETREAT_TIME; // ровно окно отхода — рвануть должно, когда контроль
+                                     // над отходом (handlePlayerRetreatMovement) как раз кончается
+const DYNAMITE_RADIUS = 58;
+const DYNAMITE_DAMAGE = 45;
+
+// Закладка мгновенная (как замах биты), но не взрывается сама — тикает
+// независимо в updateDynamites(), а экран уходит в "PROJECTILE", чтобы
+// сработал тот же handlePlayerRetreatMovement, что даёт отойти после выстрела.
+function handleDynamitePlant(worm) {
+  dynamites.push({ x: worm.x, y: worm.y - 6, fuse: DYNAMITE_FUSE, ownerTeam: worm.team });
+  playDynamitePlantSound();
+  announce(worm.name + ": ДИНАМИТ ЗАЛОЖЕН!", worm.team === "player" ? COLORS.fire1 : COLORS.hpRed);
+  state.turnTimer = RETREAT_TIME;
+  state.screen = "PROJECTILE";
+}
+
+function updateDynamites(dt) {
+  for (let i = dynamites.length - 1; i >= 0; i--) {
+    const d = dynamites[i];
+    d.fuse -= dt;
+    if (d.fuse <= 0) {
+      dynamites.splice(i, 1);
+      explode(d.x, d.y, DYNAMITE_RADIUS, DYNAMITE_DAMAGE, null);
+    }
+  }
+}
+
+function drawDynamites() {
+  for (const d of dynamites) {
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillRect(d.x - 4, d.y - 12, 8, 14);
+    ctx.fillStyle = COLORS.dynamite;
+    ctx.fillRect(d.x - 3, d.y - 11, 6, 12);
+    ctx.fillStyle = "#8a2020";
+    ctx.fillRect(d.x - 3, d.y - 6, 6, 2);
+    if (Math.floor(d.fuse * 6) % 2 === 0) {
+      ctx.fillStyle = COLORS.fuse;
+      ctx.fillRect(d.x - 1, d.y - 15, 2, 3);
+    }
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.font = "bold 11px monospace";
+    const label = d.fuse.toFixed(1) + "с";
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillText(label, d.x + 1, d.y - 17);
+    ctx.fillStyle = d.fuse < 1.5 ? COLORS.hpRed : COLORS.dynamiteLabel;
+    ctx.fillText(label, d.x, d.y - 18);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+  }
+}
+
+function applyJetpackFuel(worm, thrusting, dt) {
+  if (thrusting) {
+    state.jetpackFuel = Math.max(0, state.jetpackFuel - JETPACK_FUEL_DRAIN * dt);
+    if (!worm.jetpackThrusting) playJetpackSound();
+    worm.jetpackThrusting = true;
+  } else {
+    worm.jetpackThrusting = false;
+  }
+}
+
 function updatePlayerTurn(dt) {
   const worm = getActiveWorm("player");
   if (!worm || !worm.alive) return;
+  const thrusting = state.playerWeapon === "jetpack" && keysDown.has("ArrowUp") && state.jetpackFuel > 0;
+
   if (worm.state === "falling") {
     let airMoving = false;
     if (keysDown.has("ArrowLeft")) { tryAirMove(worm, -1, dt); airMoving = true; }
     if (keysDown.has("ArrowRight")) { tryAirMove(worm, 1, dt); airMoving = true; }
+    if (thrusting) { worm.vy = Math.max(worm.vy - JETPACK_THRUST_ACCEL * dt, JETPACK_MAX_VY); airMoving = true; }
+    applyJetpackFuel(worm, thrusting, dt);
     worm.animState = airMoving ? "walk" : "idle";
     if (airMoving) worm.animTimer += dt;
     return;
   }
+
+  if (worm.batSwingTimer > 0) {
+    worm.batSwingTimer -= dt;
+    if (worm.batSwingTimer <= 0) {
+      worm.batSwingTimer = 0;
+      resolveBatSwing(worm);
+    }
+    return;
+  }
+
   let moving = false;
   if (keysDown.has("ArrowLeft")) { tryMove(worm, -1, dt); moving = true; }
   if (keysDown.has("ArrowRight")) { tryMove(worm, 1, dt); moving = true; }
-  if (keysDown.has("ArrowUp")) worm.aimAngle = clamp(worm.aimAngle - AIM_SPEED * dt, -MAX_AIM, MAX_AIM);
-  if (keysDown.has("ArrowDown")) worm.aimAngle = clamp(worm.aimAngle + AIM_SPEED * dt, -MAX_AIM, MAX_AIM);
+  if (thrusting) {
+    worm.state = "falling";
+    worm.vy = Math.max(-JETPACK_THRUST_ACCEL * dt, JETPACK_MAX_VY);
+  } else if (state.playerWeapon !== "jetpack" && state.playerWeapon !== "bat" && state.playerWeapon !== "dynamite") {
+    if (keysDown.has("ArrowUp")) worm.aimAngle = clamp(worm.aimAngle - AIM_SPEED * dt, -MAX_AIM, MAX_AIM);
+    if (keysDown.has("ArrowDown")) worm.aimAngle = clamp(worm.aimAngle + AIM_SPEED * dt, -MAX_AIM, MAX_AIM);
+  }
+  applyJetpackFuel(worm, thrusting, dt);
   worm.animState = moving ? "walk" : "idle";
   if (moving) worm.animTimer += dt;
   if (worm.charging) worm.power = clamp(worm.power + dt / CHARGE_TIME, 0, 1);
@@ -1835,6 +2197,17 @@ function handleSpaceDown() {
   if (state.screen !== "PLAYER_TURN") return;
   const worm = getActiveWorm("player");
   if (!worm || !worm.alive || worm.state === "falling") return;
+  if (state.playerWeapon === "jetpack") return;
+  if (state.playerWeapon === "dynamite") {
+    handleDynamitePlant(worm);
+    return;
+  }
+  if (state.playerWeapon === "bat") {
+    if (worm.batSwingTimer > 0) return;
+    worm.batSwingTimer = BAT_SWING_DURATION;
+    playBatSwingSound();
+    return;
+  }
   worm.charging = true;
   worm.power = 0;
 }
@@ -1844,6 +2217,7 @@ function handleSpaceRelease() {
   const worm = getActiveWorm("player");
   if (!worm || !worm.alive || !worm.charging) return;
   worm.charging = false;
+  if (state.playerWeapon === "jetpack") { worm.power = 0; return; }
   const power = Math.max(worm.power, 0.12);
   let weaponType = state.playerWeapon;
   if (weaponType === "grenade" && state.playerSuperGrenade) {
@@ -2103,6 +2477,7 @@ function startMatch() {
   floaters = [];
   crates = [];
   fireZones = [];
+  dynamites = [];
   placeMines();
   placeBarrels();
   state.turn = "player";
@@ -2112,6 +2487,7 @@ function startMatch() {
   state.playerWeapon = "bazooka";
   state.playerSuperGrenade = false;
   state.aiSuperGrenade = false;
+  state.jetpackFuel = 1;
   state.turnCount = 0;
   state.turnTimer = TURN_TIME_LIMIT;
   state.matchTimer = MATCH_TIME_LIMIT;
@@ -2142,6 +2518,44 @@ function drawWeaponIcon(x, y, type) {
     ctx.fill();
     ctx.fillStyle = COLORS.outline;
     ctx.fillRect(x - 1, y - 9, 2, 4);
+  } else if (type === "jetpack") {
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillRect(x - 5, y - 7, 10, 14);
+    ctx.fillStyle = COLORS.jetpack;
+    ctx.fillRect(x - 4, y - 6, 8, 12);
+    ctx.fillStyle = COLORS.jetpackDark;
+    ctx.fillRect(x - 4, y - 6, 3, 12);
+    ctx.fillStyle = COLORS.fire1;
+    ctx.fillRect(x - 2, y + 6, 4, 3);
+  } else if (type === "bat") {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(-0.6);
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillRect(-3, -9, 6, 18);
+    ctx.fillStyle = COLORS.bat;
+    ctx.fillRect(-2, -8, 4, 14);
+    ctx.fillStyle = COLORS.batGrip;
+    ctx.fillRect(-2, 6, 4, 5);
+    ctx.restore();
+  } else if (type === "beetle_flying" || type === "beetle_crawl") {
+    ctx.fillStyle = COLORS.outline;
+    ctx.beginPath();
+    ctx.ellipse(x, y, 7, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLORS.beetle;
+    ctx.beginPath();
+    ctx.ellipse(x, y, 5.5, 3.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLORS.beetleStripe;
+    ctx.fillRect(x - 1, y - 3, 2, 6);
+  } else if (type === "dynamite") {
+    ctx.fillStyle = COLORS.outline;
+    ctx.fillRect(x - 3, y - 7, 6, 12);
+    ctx.fillStyle = COLORS.dynamite;
+    ctx.fillRect(x - 2, y - 6, 4, 10);
+    ctx.fillStyle = COLORS.fuse;
+    ctx.fillRect(x - 1, y - 9, 2, 3);
   } else {
     ctx.fillStyle = COLORS.outline;
     ctx.fillRect(x - 9, y - 4, 18, 8);
@@ -2219,7 +2633,7 @@ function drawHUD() {
   if (state.screen === "MENU" || state.screen === "GAME_OVER" || state.screen === "INTRO") return;
 
   // top bar is inset from the very top/edges so the rounded CRT bezel never clips it
-  const barTop = 8, barH = 30, marginX = 58;
+  const barTop = 20, barH = 30, marginX = 58;
   ctx.fillStyle = "rgba(10,8,6,0.62)";
   ctx.fillRect(0, barTop, VW, barH);
   ctx.textBaseline = "top";
@@ -2255,24 +2669,54 @@ function drawHUD() {
   ctx.fillStyle = Math.abs(state.wind) < 0.05 ? COLORS.white : COLORS.fire1;
   ctx.fillRect(markerX - 2, gaugeY - 2, 4, 10);
 
-  // right zone: weapon + hazard countdown
+  // right zone: hazard countdown (whole top bar to itself now, weapon moved to its own panel below)
   ctx.textAlign = "right";
-  ctx.font = "bold 14px monospace";
-  const weaponName = state.turn === "player" ? state.playerWeapon : state.aiWeapon;
-  const hasSuper = state.turn === "player" ? state.playerSuperGrenade : state.aiSuperGrenade;
-  const weaponLabel = (weaponName === "bazooka" ? "БАЗУКА [1]" : "ГРАНАТА [2]") + (hasSuper ? " +ТОМАТ" : "");
-  ctx.fillStyle = hasSuper ? COLORS.tomato : COLORS.white;
-  ctx.fillText(weaponLabel, VW - marginX, barTop + 4);
-  drawWeaponIcon(VW - marginX - ctx.measureText(weaponLabel).width - 12, barTop + 12, weaponName);
-
-  ctx.font = "10px monospace";
+  ctx.font = "bold 12px monospace";
   const isLava = state.biome === "lava";
   const hazardLabel = state.suddenDeath
     ? (isLava ? "ЛАВА ПОДНИМАЕТСЯ!" : "ВОДА ПОДНИМАЕТСЯ!")
-    : "ДО " + (isLava ? "ЛАВЫ" : "ВОДЫ") + ": " + Math.ceil(state.matchTimer) + "с";
-  ctx.fillStyle = state.suddenDeath ? COLORS.hpRed : "rgba(240,234,216,0.8)";
-  ctx.fillText(hazardLabel, VW - marginX, barTop + 20);
-  drawHazardIcon(VW - marginX - ctx.measureText(hazardLabel).width - 12, barTop + 22, isLava);
+    : "ДО ЗАТОПЛЕНИЯ " + (isLava ? "ЛАВОЙ" : "ВОДОЙ") + ": " + Math.ceil(state.matchTimer) + "с";
+  ctx.fillStyle = state.suddenDeath ? COLORS.hpRed : "rgba(240,234,216,0.85)";
+  ctx.fillText(hazardLabel, VW - marginX, barTop + 9);
+  drawHazardIcon(VW - marginX - ctx.measureText(hazardLabel).width - 12, barTop + 11, isLava);
+
+  // dedicated weapon panel, left side, below the top bar — was cramped into a
+  // corner of the top bar before and hard to read, now its own visible block.
+  const weaponName = state.turn === "player" ? state.playerWeapon : state.aiWeapon;
+  const hasSuper = state.turn === "player" ? state.playerSuperGrenade : state.aiSuperGrenade;
+  // турборанцу и жуку-лётчику стрелки нужны не так, как обычному оружию —
+  // подсказка в нижней панели редко замечается, поэтому дублируем прямо тут
+  const wpX = marginX, wpY = barTop + barH + 10, wpW = 190, wpH = weaponName === "jetpack" ? 58 : 42;
+  ctx.fillStyle = "rgba(10,8,6,0.62)";
+  ctx.fillRect(wpX, wpY, wpW, wpH);
+  ctx.strokeStyle = "rgba(240,234,216,0.35)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(wpX + 0.5, wpY + 0.5, wpW - 1, wpH - 1);
+  drawWeaponIcon(wpX + 20, wpY + 20, weaponName);
+
+  ctx.textAlign = "left";
+  ctx.font = "bold 15px monospace";
+  const WEAPON_LABELS = { bazooka: "БАЗУКА [1]", grenade: "ГРАНАТА [2]", jetpack: "ТУРБОРАНЕЦ [3]", bat: "БИТА [4]", beetle_flying: "ЖУК-ЛЁТЧИК [5]", dynamite: "ДИНАМИТ [6]", beetle_crawl: "ЖУК-ПОЛЗУН [7]" };
+  const weaponMainLabel = WEAPON_LABELS[weaponName] || weaponName;
+  const lowFuel = weaponName === "jetpack" && state.jetpackFuel < 0.25;
+  ctx.fillStyle = lowFuel ? COLORS.hpRed : COLORS.white;
+  ctx.fillText(weaponMainLabel, wpX + 40, wpY + 9);
+
+  ctx.font = "11px monospace";
+  if (hasSuper) {
+    ctx.fillStyle = COLORS.tomato;
+    ctx.fillText("+ТОМАТ", wpX + 40, wpY + 27);
+  } else if (weaponName === "jetpack") {
+    ctx.fillStyle = lowFuel ? COLORS.hpRed : "rgba(240,234,216,0.8)";
+    ctx.fillText("ТОПЛИВО: " + Math.round(state.jetpackFuel * 100) + "%", wpX + 40, wpY + 27);
+  } else if (weaponName === "beetle_flying") {
+    ctx.fillStyle = "rgba(240,234,216,0.8)";
+    ctx.fillText("← → ↑ РУЛИТЬ В ПОЛЁТЕ", wpX + 40, wpY + 27);
+  }
+  if (weaponName === "jetpack") {
+    ctx.fillStyle = "rgba(240,234,216,0.7)";
+    ctx.fillText("↑ ТЯГА, ← → ПОЛЁТ", wpX + 40, wpY + 45);
+  }
 
   const shooter = getActiveWorm(state.turn);
   if (shooter && shooter.charging) {
@@ -2296,7 +2740,7 @@ function drawControlHints() {
   ctx.font = "12px monospace";
   ctx.fillStyle = COLORS.white;
   ctx.fillText(
-    "←→ ДВИЖЕНИЕ   ↑↓ ПРИЦЕЛ   SHIFT ПРЫЖОК   SPACE ВЫСТРЕЛ   1/2 ОРУЖИЕ   M ЗВУК",
+    "←→ ДВИЖЕНИЕ   ↑↓ ПРИЦЕЛ   SHIFT ПРЫЖОК   SPACE ВЫСТРЕЛ   1-7 ОРУЖИЕ   M ЗВУК",
     VW / 2, barY + 10
   );
   drawSpeakerIcon(VW - 58, barY + 10, state.muted);
@@ -2349,6 +2793,9 @@ function drawMenu() {
 
   drawDifficultyPicker(248);
 
+  // короткий список — подробности по каждому оружию (тяга турборанца, замах
+  // биты, управление жуком в полёте) игрок открывает по ходу дела, не тут;
+  // разрастающийся текст в меню — то, от чего уже один раз уходили в редизайне
   const panelW = 580, panelH = 108, panelX = VW / 2 - panelW / 2, panelY = 296;
   ctx.fillStyle = "rgba(255,255,255,0.05)";
   ctx.fillRect(panelX, panelY, panelW, panelH);
@@ -2360,7 +2807,7 @@ function drawMenu() {
   const lines = [
     "← → ДВИЖЕНИЕ      ↑ ↓ ПРИЦЕЛ      SHIFT ПРЫЖОК",
     "SPACE — ДЕРЖАТЬ, ЧТОБЫ НАБРАТЬ СИЛУ, ОТПУСТИТЬ ДЛЯ ВЫСТРЕЛА",
-    "1 / 2 — ВЫБОР ОРУЖИЯ          M — ЗВУК " + (state.muted ? "ВЫКЛ" : "ВКЛ"),
+    "1-7 — ВЫБОР ОРУЖИЯ          M — ЗВУК " + (state.muted ? "ВЫКЛ" : "ВКЛ"),
   ];
   lines.forEach((line, i) => ctx.fillText(line, VW / 2, panelY + 32 + i * 30));
   ctx.textAlign = "left";
@@ -2393,7 +2840,11 @@ window.addEventListener("keydown", (e) => {
   if (!e.repeat) {
     if (e.code === "Digit1") { selectWeapon("bazooka"); selectDifficulty("easy"); }
     if (e.code === "Digit2") { selectWeapon("grenade"); selectDifficulty("veteran"); }
-    if (e.code === "Digit3") selectDifficulty("armageddon");
+    if (e.code === "Digit3") { selectWeapon("jetpack"); selectDifficulty("armageddon"); }
+    if (e.code === "Digit4") selectWeapon("bat");
+    if (e.code === "Digit5") selectWeapon("beetle_flying");
+    if (e.code === "Digit6") selectWeapon("dynamite");
+    if (e.code === "Digit7") selectWeapon("beetle_crawl");
     if (e.code === "ShiftLeft" || e.code === "ShiftRight") handleJump();
     if (e.code === "KeyM") toggleMute();
   }
@@ -2428,6 +2879,7 @@ function update(dt) {
   updateCrates(dt);
   updateMines(dt);
   updateBarrels(dt);
+  updateDynamites(dt);
   updateTurnTimer(dt);
   updateWaterAnim(dt);
   handlePlayerRetreatMovement(dt);
@@ -2448,6 +2900,7 @@ function render() {
   if (state.screen !== "MENU") {
     drawMines();
     drawBarrels();
+    drawDynamites();
     drawCrates();
     for (const w of worms) if (w.alive) drawWorm(w);
     for (const p of projectiles) drawProjectile(p);
