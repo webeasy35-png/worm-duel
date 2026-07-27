@@ -191,6 +191,13 @@
 const VW = 900, VH = 600;
 const WW = 1260, WH = 600;
 
+// Мобильная обёртка m.html грузит игру как index.html?touch=1 и рисует поверх
+// собственный сенсорный пульт. Флаг влияет ТОЛЬКО на текст подсказок, чтобы на
+// телефоне не советовали жать SHIFT и SPACE. Логика, физика, управление и весь
+// остальной рендер общие. На ПК параметра нет — флаг всегда false, и ни одна
+// ветка ниже не срабатывает.
+const TOUCH_UI = /[?&]touch=1(&|$)/.test(location.search);
+
 const COLORS = {
   sky1: "#141428",
   sky2: "#242452",
@@ -2732,6 +2739,9 @@ function drawHUD() {
 }
 
 function drawControlHints() {
+  // На телефоне нижнюю полосу не рисуем: клавиш там нет, а само место занято
+  // кнопками ОГОНЬ и ПРЫЖОК из m.html.
+  if (TOUCH_UI) return;
   const barY = VH - 26;
   ctx.fillStyle = "rgba(10,8,6,0.6)";
   ctx.fillRect(0, barY, VW, 20);
@@ -2789,7 +2799,7 @@ function drawMenu() {
   const blink = Math.sin(waterTime * 4) > -0.3;
   ctx.font = "bold 22px monospace";
   ctx.fillStyle = blink ? COLORS.fire1 : "rgba(255,201,90,0.35)";
-  ctx.fillText("ENTER — НАЧАТЬ БОЙ", VW / 2, 202);
+  ctx.fillText(TOUCH_UI ? "НАЖМИ КНОПКУ СТАРТ" : "ENTER — НАЧАТЬ БОЙ", VW / 2, 202);
 
   drawDifficultyPicker(248);
 
@@ -2804,7 +2814,11 @@ function drawMenu() {
   ctx.strokeRect(panelX + 0.5, panelY + 0.5, panelW - 1, panelH - 1);
   ctx.font = "13px monospace";
   ctx.fillStyle = COLORS.white;
-  const lines = [
+  const lines = TOUCH_UI ? [
+    "СЛЕВА — ДВИЖЕНИЕ И ПРИЦЕЛ      СПРАВА — ПРЫЖОК",
+    "ОГОНЬ — ДЕРЖАТЬ, ЧТОБЫ НАБРАТЬ СИЛУ, ОТПУСТИТЬ ДЛЯ ВЫСТРЕЛА",
+    "ОРУЖИЕ — КНОПКА СВЕРХУ          ЗВУК " + (state.muted ? "ВЫКЛ" : "ВКЛ"),
+  ] : [
     "← → ДВИЖЕНИЕ      ↑ ↓ ПРИЦЕЛ      SHIFT ПРЫЖОК",
     "SPACE — ДЕРЖАТЬ, ЧТОБЫ НАБРАТЬ СИЛУ, ОТПУСТИТЬ ДЛЯ ВЫСТРЕЛА",
     "1-7 — ВЫБОР ОРУЖИЯ          M — ЗВУК " + (state.muted ? "ВЫКЛ" : "ВКЛ"),
@@ -2823,7 +2837,7 @@ function drawGameOver() {
   ctx.fillText(state.playerWon ? "ПОБЕДА!" : "ПОРАЖЕНИЕ", VW / 2, 220);
   ctx.fillStyle = COLORS.white;
   ctx.font = "bold 20px monospace";
-  ctx.fillText("ENTER — ЕЩЁ РАЗ", VW / 2, 280);
+  ctx.fillText(TOUCH_UI ? "НАЖМИ КНОПКУ СТАРТ" : "ENTER — ЕЩЁ РАЗ", VW / 2, 280);
   drawDifficultyPicker(315);
   ctx.textAlign = "left";
 }
