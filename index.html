@@ -3,6 +3,23 @@
 <head>
 <meta charset="utf-8">
 <title>BULBA BATTLE — 8-bit Artillery</title>
+<script>
+// С телефона и планшета уводим на сенсорную версию. Проверяем не марку
+// устройства, а тип ввода: pointer:coarse — палец, а не мышь. Ноутбук с
+// сенсорным экраном остаётся на ПК-версии, потому что там основной указатель
+// всё равно мышь.
+//
+// Три условия обязательны, иначе получится рекурсия: m.html грузит эту же
+// страницу в iframe как ?touch=1, и без проверок она увела бы iframe снова на
+// m.html, и так до бесконечности. Плюс ?pc — аварийный выход на ПК-версию с
+// любого устройства.
+if (window.top === window.self
+    && !/[?&](touch=1|pc)(&|$)/.test(location.search)
+    && window.matchMedia
+    && window.matchMedia("(pointer: coarse)").matches) {
+  location.replace("m.html");
+}
+</script>
 <style>
   html, body {
     margin: 0;
